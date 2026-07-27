@@ -10,7 +10,11 @@ Branching early on "no header" is the usual shape, and it hands a local attacker
 a free oracle: the absent case returns measurably faster than the wrong case, so
 "is there a token at all" is answerable by timing before the token itself is
 attacked. Loopback binding does not help here -- the threat this addresses is
-another process on the same machine.
+another process on the same machine. The one place the code *does* branch is on
+an absent **expected** token, and it must: ``hmac.compare_digest(b"", b"")`` is
+``True``, so comparing an empty credential against an empty expected token
+authenticates a caller who sent nothing. That branch denies unconditionally and
+still pays a decoy comparison, so it costs the same as the wrong-token path.
 
 **The size cap is enforced while reading, not after.** Checking
 ``Content-Length`` alone is checking a number the client chose; a chunked request
@@ -42,6 +46,7 @@ default ``02-CONTEXT.md`` ties to the measurement in
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 from typing import Any
 
@@ -100,6 +105,11 @@ _JSON_CONTENT_TYPES = ("application/json",)
 
 _validators: dict[str, Any] = {}
 _validator_lock = threading.Lock()
+
+#: Compared against when no token is configured, so that path costs the same as
+#: a wrong-token path. Generated per process and never written down: a constant
+#: here would be a credential an attacker could read out of the source and send.
+_DECOY_TOKEN = secrets.token_urlsafe(32)
 
 
 # ---------------------------------------------------------------------------
@@ -190,16 +200,29 @@ def authenticate(request: Request, expected_token: str | None = None) -> None:
 
     supplied = _bearer(request.headers.get("authorization"))
 
-    # `or ""` rather than an early return: a gateway with no token configured
-    # must reject every request, and it must reject it on the same path.
-    if not compare_token(supplied, expected_token or ""):
-        raise GatewayError(
-            401,
-            "Incorrect API key provided. The hermes-auto-router gateway requires "
-            "the bearer token from its state directory.",
-            "invalid_request_error",
-            code="invalid_api_key",
-        )
+    if not expected_token:
+        # `hmac.compare_digest(b"", b"")` is True, so comparing against an empty
+        # expected token authenticates a caller who sent no credential at all --
+        # the exact opposite of the paragraph above. Deny unconditionally, but
+        # still pay a comparison against a decoy so that "this gateway has no
+        # token" and "you sent the wrong token" do not separate under timing for
+        # a local process. Same shape as `gateway/admin.py::require_admin`.
+        compare_token(supplied, _DECOY_TOKEN)
+        raise _invalid_api_key()
+
+    if not compare_token(supplied, expected_token):
+        raise _invalid_api_key()
+
+
+def _invalid_api_key() -> GatewayError:
+    """The single 401. One body for a missing, malformed, wrong, or absent token."""
+    return GatewayError(
+        401,
+        "Incorrect API key provided. The hermes-auto-router gateway requires "
+        "the bearer token from its state directory.",
+        "invalid_request_error",
+        code="invalid_api_key",
+    )
 
 
 # ---------------------------------------------------------------------------

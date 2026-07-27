@@ -28,6 +28,26 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.scripts]
+# Load-bearing, not a convenience. `hermes auto ...` is registered by the
+# control plugin, and Hermes loads that plugin only when `hermes-auto-control`
+# appears in plugins.enabled -- which is what `setup` writes. Without a console
+# script there is no way to run `setup` on a fresh install, because the command
+# that enables the plugin would itself be provided by the plugin.
+hermes-auto = "hermes_auto.cli:main"
+
+[project.entry-points."hermes_agent.plugins"]
+# This registers the CONTROL plugin only: slash commands, `hermes auto`
+# subcommands, and lifecycle hooks. It does NOT register the model provider.
+# Model providers are discovered by scanning
+# $HERMES_HOME/plugins/model-providers/, never by entry point
+# (02-CONTEXT § VERIFIED HERMES FACTS item 1), and the provider is installed
+# there as a shim by `hermes-auto setup`. Conflating the two is the mistake
+# design.md §5.1 invites. The key must stay `hermes-auto-control`: Hermes builds
+# the plugin manifest with `name=ep.name` and matches plugins.enabled against
+# exactly that string.
+hermes-auto-control = "hermes_auto.plugin"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
