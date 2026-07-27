@@ -1,9 +1,9 @@
 # Project State
 
 ## Current Position
-- **Phase**: 1 of 11 (complete)
-- **Status**: Phase 1 complete — review passed (3 cycles)
-- **Last Activity**: Phase 1 review passed (2026-07-27)
+- **Phase**: 2 of 11 (planned)
+- **Status**: Phase 2 planned — 9 plans across 5 waves, auto-pipeline critique applied
+- **Last Activity**: Phase 2 planning (2026-07-27)
 
 ## Progress
 ```
@@ -38,6 +38,8 @@ Phase-close gate (all green):
 - A built wheel carries all 7 schema files plus `py.typed` — closes critique finding F13
 
 ## GitHub
+- **Phase 2 issue**: [#3](https://github.com/9thLevelSoftware/hermes-auto/issues/3) — Phase 2: Provider Plugin & Passthrough Gateway
+- **Phase 1 PR**: [#2](https://github.com/9thLevelSoftware/hermes-auto/pull/2) — merged to main
 - **Phase 1 issue**: [#1](https://github.com/9thLevelSoftware/hermes-auto/issues/1) — Phase 1: Contracts, Schemas & Baselines
 
 ## Recent Decisions
@@ -55,6 +57,17 @@ Phase-close gate (all green):
 - **Version-scheme trap**: Hermes git tags are CalVer (`v2026.7.20`) but the distribution is semver `0.19.0`. The probe compares the distribution version. A CalVer range would match nothing — guarded by `test_calver_tag_is_not_treated_as_a_version`
 - **Environment isolation**: the machine default interpreter IS the Hermes Agent venv, so plan 01-01 creates a dedicated `.venv` and every command uses it
 
+## Phase 2 Plan — verified corrections to design.md
+Three read-only architecture agents inspected the real Hermes source; the coordinator re-verified the load-bearing claims. Four `design.md` §5.1 statements are wrong and are corrected in `02-CONTEXT.md` § VERIFIED HERMES FACTS:
+- Model providers are discovered by **directory scan** of `$HERMES_HOME/plugins/model-providers/`, not pip entry points — `pip install` never registers the provider
+- `ProviderProfile` is a `@dataclass`: subclass for method overrides, then **instantiate with kwargs** and call `register_provider(instance)`
+- The control plugin requires **`plugins.enabled`** opt-in or `register()` is never called
+- Hermes is a **source checkout**, not an importable distribution — verification must subprocess against its own interpreter
+
+Architecture: **Pragmatic** (Starlette + uvicorn + httpx, async, opaque-dict passthrough). Rejected `BackendAdapter`-now — Phase 7 shapes it against three real targets.
+
+Critique verdict REWORK at 19% completeness; five execution-breaking findings auto-refined, including an admin listener nothing started and a `session_id or ""` that would 400 every auxiliary call. 13 of 22 gaps were vacuous verification commands — Phase 1's finding F6 at 4x density.
+
 ## Open Items — raised by Phase 1 execution
 - **Phase 2**: no error-envelope schema exists. `wire/openai-error.v1.schema.json` is needed — context errors return the OpenAI error body, a different shape from `chat.completion`, currently unvalidated.
 - **Phase 2**: `pytest-asyncio` resolved to 1.4.0, which no longer defaults to a usable mode. Needs `asyncio_mode` in `[tool.pytest.ini_options]` or explicit markers before the first async test.
@@ -66,6 +79,10 @@ Phase-close gate (all green):
 - **Phase 2**: salting has no Phase 1 structural backstop. `telemetry/events.py` must apply a per-install salt before the digest is written, and the test that pins it (same session id under two salts → two digests) lands with that code. `docs/privacy.md` now says so explicitly.
 - **Phase 2 plan authoring**: do not copy plan 01-06's `git diff --quiet` guard idiom — it cannot detect an untracked forbidden file. Use `git status --porcelain -- <path> | grep -q . && exit 1 || exit 0`.
 - **Phase 2**: candidate ids now permit `/` (segmented pattern), so `../../etc/passwd` matches. Any consumer using a candidate id as a path component must sanitize it; the model-card description says so.
+- **Phase 3**: run `/legion:map` before planning — Phase 1 delivered 36 Python files and Phase 2 adds a full HTTP service, past the point a plan author can hold it all
+- **Phase 3**: flip `gateway.strict_validation` default if plan 02-08 measures hoisted request validation under 2 ms; no Phase 2 plan may edit that default
+- **Phase 3**: candidate ids permit `/`, so sanitize before using one as a path component — deferred from Phase 1 as N/A there
+- **Phase 2 known gaps** (recorded, not fixed): `hermes auto models|benchmark|explain|export-diagnostics` are deferred to Phases 3, 8, 4, 11; "no CORS" is asserted nowhere; `docs/privacy.md` still says salting is "Left to Phase 8" though plan 02-02 delivers it
 - **Before going public**: sweep `.planning/` for absolute paths containing the developer's OS username.
 
 ## Resolved by Phase 1
@@ -76,4 +93,4 @@ Phase-close gate (all green):
 - ~~Pin the `design.md` revision~~ — blob `18bb54b36485fa0813ec67f84a74628a9eee3aae` at commit `331a69d`, recorded in `01-CONTEXT.md` with a verification command
 
 ## Next Action
-Run `/legion:plan 2` to plan Phase 2: Provider Plugin & Passthrough Gateway
+Run `/legion:build` to execute Phase 2: Provider Plugin & Passthrough Gateway
