@@ -2,7 +2,7 @@
 
 ## Phases
 
-- [ ] Phase 1: Contracts, Schemas & Baselines (7 plans, planned)
+- [x] Phase 1: Contracts, Schemas & Baselines (7 plans, complete)
 - [ ] Phase 2: Provider Plugin & Passthrough Gateway (4 plans)
 - [ ] Phase 3: Candidate Inventory & Model Cards (3 plans)
 - [ ] Phase 4: Deterministic Routing MVP (5 plans)
@@ -181,7 +181,7 @@
 
 | Phase | Plans | Completed | Status |
 |-------|-------|-----------|--------|
-| 1. Contracts, Schemas & Baselines | 7 | 0 | Planned |
+| 1. Contracts, Schemas & Baselines | 7 | 7 | Complete |
 | 2. Provider Plugin & Passthrough Gateway | 4 | 0 | Not started |
 | 3. Candidate Inventory & Model Cards | 3 | 0 | Not started |
 | 4. Deterministic Routing MVP | 5 | 0 | Not started |
@@ -192,4 +192,4 @@
 | 9. Learned Capability Predictor | 4 | 0 | Not started |
 | 10. Outcome Residual & Constrained Adaptation | 4 | 0 | Not started |
 | 11. Production Hardening & Release | 4 | 0 | Not started |
-| **Total** | **47** | **0** | **Phase 1 planned** |
+| **Total** | **47** | **7** | **Phase 1 complete (15%)** |
