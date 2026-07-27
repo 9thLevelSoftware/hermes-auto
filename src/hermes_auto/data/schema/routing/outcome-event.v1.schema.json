@@ -2,15 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hermes-auto-router.dev/schema/routing/outcome-event.v1.json",
   "title": "Telemetry outcome event (v1)",
-  "description": "One record in the local-first outcome store (design.md §13.1-§13.3, ADR-0004). This schema is where the privacy posture becomes STRUCTURAL rather than advisory. Four prohibitions are hard defaults that hold with zero configuration: (1) store no raw prompt text; (2) store no tool-result bodies; (3) store no secrets; (4) hash root session identifiers with a local salt, so cross-machine correlation is impossible by design rather than merely disabled. Enforcement is by construction: the property set below is a closed allowlist of identifiers, numeric measurements, and small categorical enums, and `additionalProperties` is false at every object level in this schema. There is therefore no property — under any name or spelling — that can carry request content, response content, tool arguments, tool-result bodies, error bodies, or credential values, and a future field cannot smuggle content in without a schema version bump and the review that implies. `error_class` is a short classification such as `rate_limit` or `auth_failure`, never a captured error body. External export remains opt-in and may emit only a subset of these fields (design.md §13.5).",
+  "description": "One record in the local-first outcome store (design.md §13.1-§13.3, ADR-0004). This schema is where the privacy posture becomes STRUCTURAL rather than advisory. Four prohibitions are hard defaults that hold with zero configuration: (1) store no raw prompt text; (2) store no tool-result bodies; (3) store no secrets; (4) hash root session identifiers with a local salt, so cross-machine correlation is impossible by design rather than merely disabled. Enforcement is by construction in TWO layers, because a closed property set alone constrains only field NAMES and would leave every permitted field free to carry arbitrary text. Layer one: the property set below is a closed allowlist and `additionalProperties` is false at every object level. Layer two: every property that accepts a string also constrains its VALUE — `root_session_hash` must match `^[0-9a-f]{64}$`, a fixed-width hex digest that structurally cannot hold a raw Hermes session id or prompt text; `event_id` is at most 64 characters of `[A-Za-z0-9_-]`; `lane_id` and `candidate` are at most 128 characters of `[A-Za-z0-9_.:-]`; `decision_id` is `dec_` plus at most 64 alphanumerics, anchored at both ends; `error_class` is a classification capped at 64 characters; `feedback` is a two-valued enum; `occurred_at` is an anchored RFC 3339 timestamp. Every remaining property is a bounded number or a boolean. The result is that no property in this schema — under any name, spelling, or value — has room to carry request content, response content, tool arguments, tool-result bodies, error bodies, or credential values, and widening either layer requires a schema version bump and the review that implies. External export remains opt-in and may emit only a subset of these fields (design.md §13.5).",
   "type": "object",
   "required": ["event_id", "event_type", "occurred_at", "root_session_hash", "lane_id"],
   "additionalProperties": false,
   "properties": {
     "event_id": {
       "type": "string",
-      "minLength": 1,
-      "description": "Opaque unique identifier for this event."
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Opaque unique identifier for this event. Bounded length and an identifier-only character class, so this field cannot be repurposed as a free-text carrier."
     },
     "event_type": {
       "type": "string",
@@ -28,27 +29,30 @@
     "occurred_at": {
       "type": "string",
       "format": "date-time",
-      "description": "RFC 3339 timestamp at which the event occurred."
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$",
+      "description": "RFC 3339 timestamp at which the event occurred. The `pattern` is what actually enforces the shape: `format` is annotation-only under JSON Schema 2020-12 and is inert unless a validator is explicitly configured with a format checker, so it is kept as documentation but never relied on."
     },
     "root_session_hash": {
       "type": "string",
-      "minLength": 1,
-      "description": "Root session identifier hashed with a LOCAL salt (ADR-0004, design.md §13.1). Never the raw Hermes session id. Because the salt is local, the same conversation on two machines hashes differently and fleet-level correlation is unavailable by design."
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Root session identifier hashed with a LOCAL salt (ADR-0004, design.md §13.1). Never the raw Hermes session id. The pattern is what makes that structural rather than advisory: only a 64-character lowercase hex digest validates, so a raw session id, a prompt, or a credential cannot be written here even by a future code path that tries. Because the salt is local, the same conversation on two machines hashes differently and fleet-level correlation is unavailable by construction."
     },
     "lane_id": {
       "type": "string",
-      "minLength": 1,
-      "description": "Opaque lane identifier within the root session (design.md §6.2). An opaque handle, not a derived or reversible value."
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Opaque lane identifier within the root session (design.md §6.2). An opaque handle, not a derived or reversible value. Bounded length and an identifier-only character class keep it a handle rather than a text field."
     },
     "decision_id": {
       "type": "string",
-      "pattern": "^dec_",
-      "description": "The RouteDecision this outcome is attributed to, joining the event to its explainability record."
+      "pattern": "^dec_[A-Za-z0-9]{1,64}$",
+      "description": "The RouteDecision this outcome is attributed to, joining the event to its explainability record. Anchored at BOTH ends: a prefix-only `^dec_` would have accepted `dec_` followed by an arbitrary payload."
     },
     "candidate": {
       "type": "string",
-      "minLength": 1,
-      "description": "The `id` of the model card whose candidate produced this outcome."
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "The `id` of the model card whose candidate produced this outcome. Bounded to the character class model-card ids are drawn from."
     },
     "ttft_ms": {
       "type": "integer",

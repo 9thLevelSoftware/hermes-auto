@@ -156,7 +156,7 @@ def test_route_decision_selected_need_not_be_top_ranked(
 def test_route_decision_allows_empty_ranked(routing_schemas):
     """Every candidate hard-excluded is a representable structured failure."""
     instance = {
-        "decision_id": "dec_test_empty_ranked",
+        "decision_id": "dec_testEmptyRanked",
         "root_session_hash": "0" * 64,
         "lane_id": "lane_test_main",
         "cache_epoch": 0,
@@ -331,7 +331,7 @@ def test_metadata_rejects_wrong_protocol_version(fixture_dir, routing_schemas):
 def test_excluded_candidate_requires_a_reason(routing_schemas):
     """An exclusion with an empty reason list is unrepresentable."""
     instance = {
-        "decision_id": "dec_test_no_reason",
+        "decision_id": "dec_testNoReason",
         "root_session_hash": "0" * 64,
         "lane_id": "lane_test_main",
         "cache_epoch": 0,
@@ -341,11 +341,143 @@ def test_excluded_candidate_requires_a_reason(routing_schemas):
         "excluded": [{"candidate": "test-local-fast", "reasons": []}],
         "ranked": [],
         "selected": None,
-        "reason_codes": [],
+        # A real code, not []: with an empty list this instance also violates
+        # reason_codes' minItems and would keep passing for the wrong reason.
+        "reason_codes": ["HARD_REQUIREMENT"],
     }
 
     with pytest.raises(jsonschema.ValidationError):
         validate(instance, ROUTE_DECISION_ID, routing_schemas)
+
+
+def test_identifier_fields_reject_oversized_values(fixture_dir, routing_schemas):
+    """A 4 KB payload in any identifier field is rejected.
+
+    ``test_outcome_event_defines_no_content_carrying_property`` walks property
+    NAMES and cannot see this class of defect: ``additionalProperties: false``
+    constrains which keys exist, never what their values hold. Before the value
+    constraints landed, a full multi-line prompt -- API key included -- passed
+    validation in ``root_session_hash``, ``lane_id``, ``event_id``, and
+    ``candidate`` alike, which made the schema description's own claim false.
+    """
+    payload = "A" * 4096
+
+    for field in ("event_id", "root_session_hash", "lane_id", "candidate"):
+        instance = copy.deepcopy(
+            _load(fixture_dir, "valid-outcome-events.json")[0]
+        )
+        instance[field] = payload
+
+        with pytest.raises(jsonschema.ValidationError):
+            validate(instance, OUTCOME_EVENT_ID, routing_schemas)
+
+
+def test_root_session_hash_rejects_raw_session_id(fixture_dir, routing_schemas):
+    """The raw Hermes session id must not fit where its salted digest goes.
+
+    ADR-0004 and docs/privacy.md tell users cross-machine correlation is
+    unavailable *by construction*. ``^[0-9a-f]{64}$`` is what backs that claim:
+    a fixed-width hex digest has no room for a session id, a prompt, or a
+    credential, so no future code path can quietly write one here.
+    """
+    raw = "hermes-session-9f2c-user-alice"
+
+    event = copy.deepcopy(_load(fixture_dir, "valid-outcome-events.json")[0])
+    event["root_session_hash"] = raw
+    with pytest.raises(jsonschema.ValidationError):
+        validate(event, OUTCOME_EVENT_ID, routing_schemas)
+
+    decision = copy.deepcopy(_load(fixture_dir, "valid-route-decision.json"))
+    decision["root_session_hash"] = raw
+    with pytest.raises(jsonschema.ValidationError):
+        validate(decision, ROUTE_DECISION_ID, routing_schemas)
+
+    # Both schemas agree on the constraint, so neither can drift alone.
+    for schema_id in (OUTCOME_EVENT_ID, ROUTE_DECISION_ID):
+        pattern = routing_schemas[schema_id]["properties"]["root_session_hash"][
+            "pattern"
+        ]
+        assert pattern == "^[0-9a-f]{64}$", schema_id
+
+
+def test_decision_id_pattern_is_anchored_at_both_ends(fixture_dir, routing_schemas):
+    """``^dec_`` alone accepted ``dec_`` followed by an arbitrary payload."""
+    smuggled = "dec_" + "sk-not-a-real-key\nline two of a raw prompt"
+
+    event = copy.deepcopy(_load(fixture_dir, "valid-outcome-events.json")[0])
+    event["decision_id"] = smuggled
+    with pytest.raises(jsonschema.ValidationError):
+        validate(event, OUTCOME_EVENT_ID, routing_schemas)
+
+    decision = copy.deepcopy(_load(fixture_dir, "valid-route-decision.json"))
+    decision["decision_id"] = smuggled
+    with pytest.raises(jsonschema.ValidationError):
+        validate(decision, ROUTE_DECISION_ID, routing_schemas)
+
+
+@pytest.mark.parametrize(
+    "occurred_at",
+    ["", "not-a-timestamp", "2026-07-26", "2026-07-26 10:00:00", "2026-07-26T10:00:00"],
+)
+def test_occurred_at_rejects_non_rfc3339_values(
+    occurred_at, fixture_dir, routing_schemas
+):
+    """``format: date-time`` is annotation-only, so a ``pattern`` does the work.
+
+    ``jsonschema`` applies no format checker unless one is passed explicitly,
+    and the ``date-time`` checker additionally needs ``rfc3339-validator``,
+    which this project does not depend on. Both ``""`` and outright garbage
+    validated before the pattern was added.
+    """
+    instance = copy.deepcopy(_load(fixture_dir, "valid-outcome-events.json")[0])
+    instance["occurred_at"] = occurred_at
+
+    with pytest.raises(jsonschema.ValidationError):
+        validate(instance, OUTCOME_EVENT_ID, routing_schemas)
+
+
+def test_reason_codes_reject_empty_and_duplicated(fixture_dir, routing_schemas):
+    """The selection path must be as explainable as the exclusion path.
+
+    ``excluded[].reasons`` carries ``minItems: 1`` so no exclusion is
+    unexplained; ``reason_codes`` had neither ``minItems`` nor ``uniqueItems``,
+    so a decision could select a candidate and explain nothing (design.md §12).
+    """
+    instance = copy.deepcopy(_load(fixture_dir, "valid-route-decision.json"))
+
+    instance["reason_codes"] = []
+    with pytest.raises(jsonschema.ValidationError):
+        validate(instance, ROUTE_DECISION_ID, routing_schemas)
+
+    instance["reason_codes"] = ["COST_TIEBREAK"] * 3
+    with pytest.raises(jsonschema.ValidationError):
+        validate(instance, ROUTE_DECISION_ID, routing_schemas)
+
+
+def test_exclusion_reason_is_bounded_free_text(fixture_dir, routing_schemas):
+    """The one free-text channel in the record is capped, and the description says so.
+
+    ``excluded[].reasons[]`` is stored durably, so an unbounded string is a
+    place a stack trace or a tool-result body could land. 200 characters is
+    comfortably above the design.md §12 example and far below any body.
+    """
+    instance = copy.deepcopy(_load(fixture_dir, "valid-route-decision.json"))
+    instance["excluded"][0]["reasons"] = ["x" * 201]
+
+    with pytest.raises(jsonschema.ValidationError):
+        validate(instance, ROUTE_DECISION_ID, routing_schemas)
+
+    instance["excluded"][0]["reasons"] = ["x" * 200]
+    validate(instance, ROUTE_DECISION_ID, routing_schemas)
+
+    # The top-level description must not claim the record carries "only
+    # identifiers, numeric scores, and machine-readable reason codes" while a
+    # bounded free-text field exists.
+    description = routing_schemas[ROUTE_DECISION_ID]["description"]
+    assert "only identifiers, numeric scores, and machine-readable reason codes" not in (
+        description
+    )
+    assert "free-text" in description
 
 
 def test_unknown_domain_tag_on_card_fails(fixture_dir, routing_schemas):

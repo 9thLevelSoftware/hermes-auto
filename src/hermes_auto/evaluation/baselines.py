@@ -36,6 +36,7 @@ from hermes_auto.evaluation.corpus import (
     SUPPORTED_CORPUS_VERSION,
     BaselineTask,
     CorpusError,
+    require_mapping,
 )
 from hermes_auto.evaluation.metrics import MetricSummary, aggregate
 
@@ -43,6 +44,7 @@ __all__ = [
     "BASELINE_STRATEGIES",
     "BaselineReport",
     "build_report",
+    "check_run_shapes",
     "render_json",
     "render_markdown",
 ]
@@ -87,6 +89,51 @@ class BaselineReport:
     generated_from: tuple[str, ...]
 
 
+def check_run_shapes(runs: list[dict]) -> None:
+    """Raise :class:`CorpusError` unless every run has the recorded-run shape.
+
+    Checks structure only — that each run is a mapping, that ``events`` is a
+    list, and that each entry and its ``event`` are mappings. Field *values* are
+    the schema's business, not this function's.
+
+    Split out of :func:`build_report` so a caller that wants to inspect events
+    before aggregating them — ``scripts/benchmark.py`` validates each event
+    against ``outcome-event.v1`` first — can traverse the structure without
+    reimplementing the same guards or risking the ``AttributeError`` they exist
+    to prevent. :func:`build_report` calls it too, so aggregating an unchecked
+    run is not a reachable mistake.
+
+    Every message names the run index and the entry position, because a
+    programmatically generated corpus of recordings is diagnosed by locating the
+    bad record, not by learning that one exists.
+
+    Args:
+        runs: Parsed recorded-run values, exactly as ``json.load`` returned
+            them. The ``list[dict]`` annotation states the *intent*; this
+            function is what makes it true, so it must not assume it.
+
+    Raises:
+        CorpusError: Any run, entry, or ``event`` is not a mapping, or ``events``
+            is present and is not a list.
+    """
+    for index, raw_run in enumerate(runs):
+        run = require_mapping(raw_run, f"recorded run at index {index}")
+
+        raw_events = run.get("events", ())
+        # A str is iterable, so an unchecked `"events": "oops"` would iterate
+        # characters and fail later with an opaque AttributeError on a str.
+        if not isinstance(raw_events, (list, tuple)):
+            raise CorpusError(
+                f"recorded run at index {index} has 'events' of type "
+                f"{type(raw_events).__name__}; expected a list"
+            )
+
+        for position, raw_entry in enumerate(raw_events):
+            where = f"recorded run at index {index}, event entry at position {position}"
+            entry = require_mapping(raw_entry, where)
+            require_mapping(entry.get("event"), f"{where}: 'event'")
+
+
 def build_report(
     corpus: list[BaselineTask],
     runs: list[dict],
@@ -107,30 +154,38 @@ def build_report(
         A report whose ``strategies`` mapping covers all nine baselines.
 
     Raises:
-        CorpusError: A run declares a ``strategy`` outside
-            :data:`BASELINE_STRATEGIES`, or an event entry names a ``task_id``
-            the corpus does not define. Both are reported by name — an unknown
-            task id silently dropped would understate the denominator of every
-            per-task rate in the report.
+        CorpusError: A run is structurally malformed (see
+            :func:`check_run_shapes`), declares a ``strategy`` outside
+            :data:`BASELINE_STRATEGIES`, names a ``task_id`` the corpus does not
+            define, or carries an unusable count field. All are reported by name
+            with the offending index. An unknown task id silently dropped would
+            understate the denominator of every per-task rate in the report, and
+            a structural fault escaping as an ``AttributeError`` would leave an
+            operator unable to tell a malformed run file from a broken harness.
     """
+    check_run_shapes(runs)
+
     known_task_ids = {task.task_id for task in corpus}
 
     grouped: dict[str, list[dict]] = {name: [] for name in BASELINE_STRATEGIES}
 
-    for run in runs:
+    for index, run in enumerate(runs):
         strategy = run.get("strategy")
-        if strategy not in grouped:
+        # The isinstance test comes first because `unhashable in dict` raises
+        # TypeError, which would be a traceback rather than this error.
+        if not isinstance(strategy, str) or strategy not in grouped:
             raise CorpusError(
-                f"recorded run declares unknown strategy {strategy!r}; "
-                f"expected one of {list(BASELINE_STRATEGIES)}"
+                f"recorded run at index {index} declares unknown strategy "
+                f"{strategy!r}; expected one of {list(BASELINE_STRATEGIES)}"
             )
 
-        for entry in run.get("events", ()):
+        for position, entry in enumerate(run.get("events", ())):
             task_id = entry.get("task_id")
-            if task_id not in known_task_ids:
+            if not isinstance(task_id, str) or task_id not in known_task_ids:
                 raise CorpusError(
-                    f"recorded run for strategy {strategy!r} references task_id "
-                    f"{task_id!r}, which is absent from the corpus; known task "
+                    f"recorded run at index {index} for strategy {strategy!r} "
+                    f"references task_id {task_id!r} at event position "
+                    f"{position}, which is absent from the corpus; known task "
                     f"ids are {sorted(known_task_ids)}"
                 )
 

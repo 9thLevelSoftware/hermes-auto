@@ -96,7 +96,7 @@ order.
 | `rule-based-tiers` | Hand-written difficulty tiers | No — needs the tier rules (Phase 4) |
 | `deterministic-capability-router` | Capability matching, no learning | No — Phase 4 |
 | `capability-plus-domain-affinity` | Capability matching plus domain tags | No — Phase 4 |
-| `capability-plus-learned-residual` | Adds the learned outcome residual | No — Phase 9 |
+| `capability-plus-learned-residual` | Adds the learned outcome residual | No — Phase 10 |
 | `oracle-hindsight` | Best possible choice known after the fact | No — computable only once several strategies have run over the same corpus |
 
 Only the fixed-model baselines can be recorded now, because the machinery that

@@ -7,6 +7,22 @@
   "temperature": 0.2,
   "max_completion_tokens": 512,
   "tool_choice": "auto",
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "synthetic_fixture_summary",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "region": { "type": "string" },
+          "unit": { "type": "string" }
+        },
+        "required": ["region", "unit"],
+        "additionalProperties": false
+      }
+    }
+  },
   "tools": [
     {
       "type": "function",

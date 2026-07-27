@@ -16,9 +16,17 @@ from __future__ import annotations
 import json
 import pathlib
 
+import jsonschema
+import jsonschema.exceptions
 import pytest
 
-from hermes_auto.gateway.schemas import SCHEMA_ROOT, SchemaLoadError, load_schemas
+from hermes_auto.gateway.schemas import (
+    SCHEMA_ROOT,
+    SchemaLoadError,
+    build_registry,
+    load_schemas,
+    validate,
+)
 
 pytestmark = pytest.mark.contract
 
@@ -112,3 +120,104 @@ def test_non_object_schema_raises(tmp_path: pathlib.Path):
     message = str(excinfo.value)
     assert notobj.name in message
     assert "list" in message
+
+
+# --------------------------------------------------------------------------
+# Cross-file ``$ref`` resolution
+# --------------------------------------------------------------------------
+
+_CHILD = {
+    "$id": "urn:test:child",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["version"],
+    "properties": {"version": {"const": 1}},
+    "additionalProperties": False,
+}
+
+
+def _parent(ref: str) -> dict:
+    return {
+        "$id": "urn:test:parent",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"envelope": {"$ref": ref}},
+    }
+
+
+def test_cross_file_ref_resolves_through_the_registry(tmp_path: pathlib.Path):
+    """A ``$ref`` naming another loaded file's ``$id`` is enforced, not ignored.
+
+    ``validate()`` passing a bare schema dict left every cross-file reference
+    unresolvable, which is why the request schema had to inline
+    ``_hermes_auto`` as a bare ``{"type": "object"}``.
+    """
+    _write(tmp_path / "child.schema.json", _CHILD)
+    _write(tmp_path / "parent.schema.json", _parent("urn:test:child"))
+    schemas = load_schemas(tmp_path)
+    assert set(schemas) == {"urn:test:child", "urn:test:parent"}
+
+    validate({"envelope": {"version": 1}}, "urn:test:parent", schemas)
+
+    # The referenced constraints actually apply.
+    for bad in ({"version": 2}, {"version": 1, "extra": "x"}, {}):
+        with pytest.raises(jsonschema.ValidationError):
+            validate({"envelope": bad}, "urn:test:parent", schemas)
+
+
+def test_unresolvable_ref_raises_a_ref_resolution_error(tmp_path: pathlib.Path):
+    """A ``$ref`` to an ``$id`` outside the mapping is a distinct, documented type.
+
+    It is ``jsonschema.exceptions._WrappedReferencingError``, a subclass of
+    both ``jsonschema.exceptions._RefResolutionError`` and
+    ``referencing.exceptions.Unresolvable`` -- and notably NOT a
+    ``ValidationError``, so a caller that only catches ``ValidationError``
+    would let it escape. Callers must pass a mapping covering the reference
+    closure; in practice a bare ``load_schemas()`` over the whole root.
+    """
+    _write(tmp_path / "parent.schema.json", _parent("urn:test:nowhere"))
+    schemas = load_schemas(tmp_path)
+
+    with pytest.raises(jsonschema.exceptions._RefResolutionError) as excinfo:
+        validate({"envelope": {}}, "urn:test:parent", schemas)
+
+    assert not isinstance(excinfo.value, jsonschema.ValidationError)
+    assert "urn:test:nowhere" in str(excinfo.value)
+
+
+def test_build_registry_covers_every_packaged_schema():
+    """Every ``$id`` under the schema root is resolvable from the registry."""
+    schemas = load_schemas()
+    registry = build_registry(schemas)
+
+    for schema_id in schemas:
+        assert registry.contents(schema_id) == schemas[schema_id]
+
+
+def test_packaged_schemas_have_no_dangling_refs():
+    """Every absolute ``$ref`` in the packaged tree resolves against the full load.
+
+    This is what keeps ``_hermes_auto``'s cross-directory reference honest: a
+    renamed or removed ``$id`` fails here rather than at gateway runtime.
+    """
+    schemas = load_schemas()
+    resolver = build_registry(schemas).resolver()
+
+    def refs(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and not ref.startswith("#"):
+                yield ref
+            for child in node.values():
+                yield from refs(child)
+        elif isinstance(node, list):
+            for child in node:
+                yield from refs(child)
+
+    seen = 0
+    for schema_id, schema in schemas.items():
+        for ref in refs(schema):
+            seen += 1
+            resolver.lookup(ref)  # raises Unresolvable if dangling
+
+    assert seen >= 1, "expected at least one cross-file $ref in the packaged tree"

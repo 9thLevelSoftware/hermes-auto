@@ -23,6 +23,11 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          # This job installs Hermes from upstream, which executes third-party
+          # build code in the same shell. Nothing here pushes, so the token has
+          # no reason to sit in .git/config for those steps to reach.
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,23 +45,38 @@ jobs:
       # repository variable: an upstream rename must be fixable without editing
       # this workflow. The variable is non-secret -- it is a public PyPI name.
       - name: Install the latest released Hermes
+        id: install
         env:
           HERMES_DIST_NAME: ${{ vars.HERMES_DIST_NAME }}
         run: |
           if [ -z "$HERMES_DIST_NAME" ]; then
             echo "::warning::Repository variable HERMES_DIST_NAME is not provisioned; skipping the Hermes install. This job measures nothing until it is set -- the report job fails on this condition."
+            echo "installed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           python -m pip install "$HERMES_DIST_NAME"
+          echo "installed=true" >> "$GITHUB_OUTPUT"
 
+      # Gated on the install having actually happened, so the unprovisioned case
+      # stays a warning owned by the report job rather than becoming a failure
+      # here -- and so this step, when it does run, can assert unconditionally.
+      #
+      # is_usable, not "is not VERSION_UNREADABLE". Three of the four
+      # CompatibilityStatus members satisfy the latter, so it passed on
+      # HERMES_NOT_INSTALLED and on UNSUPPORTED_VERSION: an upstream rename that
+      # left HERMES_DISTRIBUTION_NAME stale, or a Hermes 1.0.0 that pushed
+      # SUPPORTED_HERMES out of date, both reported green. is_usable is true only
+      # for COMPATIBLE (compatibility.py:83-91), which is precisely the "break
+      # against the supported released Hermes" this job exists to catch.
       - name: Probe compatibility
+        if: steps.install.outputs.installed == 'true'
         run: |
           python - <<'PY'
-          from hermes_auto.compatibility import CompatibilityStatus, check_compatibility
+          from hermes_auto.compatibility import check_compatibility
 
           result = check_compatibility()
           print(result)
-          assert result.status is not CompatibilityStatus.VERSION_UNREADABLE, result
+          assert result.is_usable, result
           PY
 
       - name: Run the test suite
@@ -72,6 +92,11 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          # This job pip-installs straight from an upstream git ref, which runs
+          # third-party build code in the same shell. Nothing here pushes, so
+          # the token has no reason to sit in .git/config for that step to read.
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -89,24 +114,39 @@ jobs:
       # never a secret. Values are passed through env rather than interpolated
       # into the shell text so a variable value cannot alter the command.
       - name: Install Hermes from the development branch
+        id: install
         env:
           HERMES_GIT_URL: ${{ vars.HERMES_GIT_URL }}
           HERMES_GIT_REF: ${{ vars.HERMES_GIT_REF || 'main' }}
         run: |
           if [ -z "$HERMES_GIT_URL" ]; then
             echo "::warning::Repository variable HERMES_GIT_URL is not provisioned; skipping the Hermes install. This job measures nothing until it is set -- the report job fails on this condition."
+            echo "installed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           python -m pip install "git+${HERMES_GIT_URL}@${HERMES_GIT_REF}"
+          echo "installed=true" >> "$GITHUB_OUTPUT"
 
+      # Reached only after the install above actually ran and succeeded, so a
+      # HERMES_NOT_INSTALLED here means the distribution name drifted: someone
+      # updated vars.HERMES_GIT_URL for an upstream rename but left
+      # HERMES_DISTRIBUTION_NAME in compatibility.py pointing at the old name.
+      # It is asserted first, ahead of is_usable, so that failure names its own
+      # cause instead of surfacing as a generic "not COMPATIBLE".
+      #
+      # This job is continue-on-error, so red here is signal about unreleased
+      # Hermes rather than a broken build -- which is what makes it safe to hold
+      # it to the same COMPATIBLE-only bar as the release job.
       - name: Probe compatibility
+        if: steps.install.outputs.installed == 'true'
         run: |
           python - <<'PY'
           from hermes_auto.compatibility import CompatibilityStatus, check_compatibility
 
           result = check_compatibility()
           print(result)
-          assert result.status is not CompatibilityStatus.VERSION_UNREADABLE, result
+          assert result.status is not CompatibilityStatus.HERMES_NOT_INSTALLED, result
+          assert result.is_usable, result
           PY
 
       - name: Run the test suite

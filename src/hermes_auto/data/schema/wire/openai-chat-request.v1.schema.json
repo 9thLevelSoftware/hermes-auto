@@ -59,8 +59,8 @@
     "seed": { "type": "integer" },
     "user": { "type": "string" },
     "_hermes_auto": {
-      "type": "object",
-      "description": "Routing metadata injected by the Hermes provider plugin via build_extra_body(). Intentionally opaque here: its full shape is defined by routing/hermes-auto-metadata.v1.schema.json, and duplicating those properties would create two sources of truth. Permitted but never required. Per design.md 5.1 the gateway strips this key before forwarding the request upstream."
+      "$ref": "https://hermes-auto-router.dev/schema/routing/hermes-auto-metadata.v1.json",
+      "description": "Routing metadata injected by the Hermes provider plugin via build_extra_body(). Referenced by $id rather than restated, so there is exactly one source of truth for its shape and the envelope's own rules — protocol_version must be 1, unknown keys are a version mismatch — are actually enforced here. Typing it as a bare object instead accepted {\"protocol_version\": 99, \"junk\": \"x\"}. Resolving this $ref requires the validator to carry a registry covering the routing schemas; hermes_auto.gateway.schemas.validate() builds one from the loaded mapping. Permitted but never required. Per design.md 5.1 the gateway strips this key before forwarding the request upstream."
     }
   },
   "$defs": {
@@ -115,34 +115,48 @@
       ]
     },
     "contentPart": {
-      "description": "One part of a multipart message body. Image parts are what make the vision cases in design.md 20.3 expressible.",
-      "oneOf": [
+      "type": "object",
+      "description": "One part of a multipart message body, dispatched on `type`. Image parts are what make the vision cases in design.md 20.3 expressible. This def is deliberately OPEN rather than a closed oneOf: a closed form was the only closed object in a relay schema whose message objects one level up are additionalProperties: true, and it rejected requests the upstream provider accepts — `cache_control` on a text part, `mime_type` on an image part, and the `input_audio` and `file` part types, the first of which is the only way the `audio` modality this schema claims to accept can actually arrive. Unknown part types relay untyped; the two types the gateway itself reasons about stay strictly typed via the conditionals below.",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Part discriminator, e.g. `text`, `image_url`, `input_audio`, or `file`. Required and a string so a part is always dispatchable, but not enumerated, so a part type added by a provider is relayed rather than rejected."
+        }
+      },
+      "allOf": [
         {
-          "type": "object",
-          "required": ["type", "text"],
-          "additionalProperties": false,
-          "properties": {
-            "type": { "const": "text" },
-            "text": { "type": "string" }
+          "if": {
+            "properties": { "type": { "const": "text" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["text"],
+            "properties": { "text": { "type": "string" } }
           }
         },
         {
-          "type": "object",
-          "required": ["type", "image_url"],
-          "additionalProperties": false,
-          "properties": {
-            "type": { "const": "image_url" },
-            "image_url": {
-              "type": "object",
-              "required": ["url"],
-              "additionalProperties": false,
-              "properties": {
-                "url": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "An https URL or a data: URI carrying the image bytes."
-                },
-                "detail": { "enum": ["auto", "low", "high"] }
+          "if": {
+            "properties": { "type": { "const": "image_url" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["image_url"],
+            "properties": {
+              "image_url": {
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": true,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "An https URL or a data: URI carrying the image bytes."
+                  },
+                  "detail": { "enum": ["auto", "low", "high"] }
+                }
               }
             }
           }
@@ -217,13 +231,35 @@
     },
     "responseFormat": {
       "type": "object",
-      "description": "Structured-output request (design.md 20.3, 'structured outputs').",
+      "description": "Structured-output request (design.md 20.3, 'structured outputs'). A `json_schema` type without its `json_schema` payload is not a relayable request — the upstream provider has nothing to constrain generation with — so the payload is conditionally required rather than merely permitted.",
       "required": ["type"],
       "additionalProperties": true,
       "properties": {
         "type": { "enum": ["text", "json_object", "json_schema"] },
-        "json_schema": { "type": "object" }
-      }
+        "json_schema": {
+          "type": "object",
+          "required": ["name", "schema"],
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "schema": {
+              "type": "object",
+              "description": "The JSON Schema the completion must conform to."
+            },
+            "strict": { "type": ["boolean", "null"] },
+            "description": { "type": "string" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "json_schema" } },
+            "required": ["type"]
+          },
+          "then": { "required": ["json_schema"] }
+        }
+      ]
     }
   }
 }

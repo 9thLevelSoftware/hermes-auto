@@ -1,0 +1,41 @@
+{
+  "model": "test-model-c",
+  "modalities": ["text", "audio"],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic fixture: a text part carrying a provider extension key.",
+          "cache_control": { "type": "ephemeral" }
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGP4DwABAQEAWk1v8QAAAABJRU5ErkJggg==",
+            "detail": "auto",
+            "mime_type": "image/png"
+          }
+        },
+        {
+          "type": "input_audio",
+          "input_audio": {
+            "data": "U1lOVEhFVElD",
+            "format": "wav"
+          }
+        },
+        {
+          "type": "file",
+          "file": {
+            "file_id": "file_synthetic_fixture_0"
+          }
+        },
+        {
+          "type": "a_part_type_that_does_not_exist_yet",
+          "payload": { "anything": true }
+        }
+      ]
+    }
+  ]
+}

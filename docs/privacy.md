@@ -36,27 +36,49 @@ choice it made, and what happened as a result:
 - Retry counts, fallback counts, whether context compression happened, whether you interrupted.
 - Explicit feedback you choose to give, such as a thumbs-down on a turn.
 
-A stored decision looks roughly like this. Every value here is fabricated for illustration:
+A stored **outcome event** looks roughly like this. Every value here is fabricated for illustration,
+but the record validates against the shipped schema exactly as written:
 
 ```json
 {
-  "session_hash": "a1b2c3d4e5f6a7b8",
-  "lane_hash": "9f8e7d6c5b4a3210",
-  "candidate_id": "test-hosted-general",
-  "mode": "balanced",
-  "requirement_scores": { "reasoning": 0.42, "coding": 0.71, "long_context": 0.10 },
-  "reason_code": "cheapest_candidate_meeting_floor",
+  "event_id": "evt_9c41ba07",
+  "event_type": "request_completed",
+  "occurred_at": "2026-07-26T14:31:07Z",
+  "root_session_hash": "4276dacc373e311a5b4bbb78176abba749a0a54352a93c2824c838d1d51f0675",
+  "lane_id": "lane_main",
+  "decision_id": "dec_9c41ba07",
+  "candidate": "test-hosted-general",
+  "ttft_ms": 480,
+  "total_latency_ms": 3120,
   "input_tokens": 4210,
   "output_tokens": 260,
-  "cost_usd": 0.0031,
-  "ttft_ms": 480
+  "cached_tokens": 3968,
+  "actual_cost_usd": 0.0031,
+  "tool_call_count": 2,
+  "invalid_tool_call_count": 0,
+  "turn_succeeded": true
 }
 ```
 
-That shape is not a convention that a future contributor could quietly widen. It is fixed by the
-**outcome-event schema** delivered in Phase 1, and the schema **structurally rejects anything outside
-this list** — a record containing a field the schema does not name fails validation and is not
-written.
+Two schemas divide a routing record between them, and it is worth being precise about which holds
+what:
+
+- **`outcome-event.v1`** — the block above. Identifiers and measurements: what was routed, how long
+  it took, what it cost, whether it worked.
+- **`route-decision.v1`** — the companion explainability record. This is where the routing *scores*
+  live: the predicted capability requirement vector across eight named dimensions (`reasoning`,
+  `code_generation`, `debugging`, `tool_orchestration`, `long_horizon_execution`,
+  `context_synthesis`, `structured_precision`, `multimodal_reasoning`), the ranked candidates, and
+  the reason codes drawn from a frozen twelve-value vocabulary — `CAPABILITY_FIT`, `COST_TIEBREAK`,
+  `STICKY_CACHE`, `HEALTH_VETO`, and eight others.
+
+The two are joined by **`decision_id`**, so an outcome can be traced back to the reasoning that
+selected the model, and neither record carries your text at any point in that chain.
+
+Neither shape is a convention that a future contributor could quietly widen. Both are fixed by
+schemas delivered in Phase 1, and both set `additionalProperties: false`, so each schema
+**structurally rejects anything outside its own list** — a record containing a field the schema does
+not name fails validation and is not written.
 
 ---
 
@@ -76,9 +98,11 @@ are not settings you need to find and enable:
    appears in a config file, a model card, a log line, or the store.
 4. **Session identifiers are hashed with a local salt.** The salt is generated on your machine and
    stays there, so a stored record cannot be linked back to a Hermes session id, and the same
-   conversation on two machines produces two unrelated hashes. Cross-machine correlation is not
-   merely switched off — it is unavailable by construction, and no future feature can quietly
-   re-enable it.
+   conversation on two machines produces two unrelated hashes. What enforces this is a schema
+   pattern you can go and read: `root_session_hash` is constrained to `^[0-9a-f]{64}$` in both
+   `outcome-event.v1` and `route-decision.v1`. A fixed-width lowercase hex digest has no room to
+   carry a raw Hermes session id, a prompt, or a credential, so a future code path that tried to
+   write one there would fail validation rather than quietly re-enable cross-machine correlation.
 
 The outcome-event schema sets `additionalProperties: false`. The practical effect is worth stating
 plainly: if someone later added code that tried to write a prompt field into the store, it would
@@ -100,6 +124,13 @@ faith.
 The router's local gateway binds to the **loopback interface only** and requires a bearer token
 generated during setup, stored with owner-only file permissions. It is not reachable from your
 network, and it sends no cross-origin headers, so a web page cannot talk to it either.
+
+**Availability:** the gateway does not exist yet. It, the loopback binding, and the generated bearer
+token all arrive in **Phase 2**, and there is no setup command today, so nothing generates a token
+either. [`SECURITY.md`](../SECURITY.md) publishes loopback-only binding, the generated bearer token
+with restrictive file permissions, and the no-CORS rule as **hard requirements the implementation
+must meet** rather than behavior that exists now; [`docs/threat-model.md`](threat-model.md) assigns
+them to `gateway/auth.py` in Phase 2.
 
 Nothing leaves your machine except the model requests themselves, which go to the provider the router
 selected — the same providers Hermes would have called anyway.

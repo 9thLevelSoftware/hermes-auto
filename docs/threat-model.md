@@ -106,10 +106,10 @@ relative to `src/hermes_auto/` and are drawn from `design.md` §17.
 | Local port accessed by another process | Spoofing | Loopback binding, generated bearer token, no CORS, restrictive token-file permissions (binding in `gateway/app.py`; separate admin auth scope in `gateway/admin.py` per §5.3) | `gateway/auth.py` | Phase 2 |
 | Secret leakage in logs | Information disclosure | Central redaction, credential references rather than values, structured logging allowlist (`env:VAR_NAME` references resolved in `config.py`; explanations constrained in `routing/explain.py`) | `gateway/errors.py` | Phase 2 |
 | Malicious model metadata | Tampering | Schema validation, source checksums, operator overrides, conservative defaults (checksummed registry snapshots in `inventory/snapshots.py`; overrides in `inventory/model_cards.py`) — validation is grounded by the model-card JSON Schema delivered by plan 01-04 in Phase 1 | `inventory/validation.py` | Phase 3; schema Phase 1 |
-| Sidecar dependency compromise | Elevation of privilege | Isolated environment, pinned dependencies, lockfile, vulnerability scanning (isolation from the Hermes environment per ADR-0005; lockfile and scanning in CI under `.github/workflows/`; per-adapter isolation in `adapters/`) | `supervisor.py` | Phase 2; CI scanning Phase 1; adapter isolation Phase 7 |
+| Sidecar dependency compromise | Elevation of privilege | Isolated environment, pinned dependencies, lockfile, vulnerability scanning (isolation from the Hermes environment per ADR-0005; lockfile and scanning in CI under `.github/workflows/`; per-adapter isolation in `adapters/`) | `supervisor.py` | Phase 2; lockfile and CI scanning Phase 11; adapter isolation Phase 7 |
 | Raw code exported unintentionally | Information disclosure | No raw storage by default, explicit export consent, local retention controls (event shape fixed by `telemetry/events.py` and the outcome-event schema from plan 01-04; retention window in `telemetry/retention.py`) — see ADR-0004 | `telemetry/exporters.py` | Phase 8; schema Phase 1 |
 | Cost estimate manipulation | Tampering | Reconcile predicted and actual usage, cap output, unknown price is never zero (§7.5; reconciliation against observed usage in `telemetry/outcomes.py`) | `routing/cost.py` | Phase 4; reconciliation Phase 8 |
-| Router classifier attack | Tampering | Input truncation, score caps, out-of-distribution detection, deterministic fallback (truncation in `routing/features.py`; heuristic fallback in `routing/heuristic_predictor.py`; out-of-distribution scoring in `routing/learned_predictor.py`) | `routing/requirements.py` | Phase 4; out-of-distribution detection Phase 9 |
+| Router classifier attack | Tampering | Input truncation, score caps, OOD detection, deterministic fallback (truncation in `routing/features.py`; heuristic fallback in `routing/heuristic_predictor.py`; out-of-distribution (OOD) scoring in `routing/learned_predictor.py`) | `routing/requirements.py` | Phase 4; OOD detection Phase 9 |
 | Model response spoofs route metadata | Repudiation | Gateway — not the target model — sets decision headers and logs (headers emitted on the response path in `gateway/app.py` and `gateway/streaming.py`; no route metadata is ever read back out of an upstream response) | `routing/decision.py` | Phase 4 |
 | Mid-stream fallback corrupts tools | Tampering | First-chunk commit barrier; no post-commit model splicing (§8.2 — the route commits once upstream connects, status is valid, and the first valid SSE event is parsed; fallback selection in `health/tracker.py`) | `gateway/streaming.py` | Phase 6 |
 | Concurrent state collision | Tampering | Per-lane locks, transactional state updates, hashed compound keys (lane identity in `state/lanes.py`; cache-epoch keys in `state/cache_epochs.py`) | `state/locks.py` | Phase 5 |
@@ -158,6 +158,26 @@ What this model does **not** mitigate. These are accepted, not overlooked.
   candidate served a turn. If the local store is deleted — which users are explicitly entitled to do
   — that record is gone, and cost attribution for prior turns is unrecoverable. This is a deliberate
   trade in favor of the privacy posture in ADR-0004.
+- **No dependency lockfile or vulnerability scanning exists as of Phase 1.** The *Sidecar dependency
+  compromise* row names pinned dependencies, a lockfile, and vulnerability scanning; none of the four
+  are implemented. There is no lockfile anywhere in the tree, no `dependabot.yml`, and no
+  `pip-audit`, `safety`, `osv-scanner`, or `bandit` step in either workflow under
+  `.github/workflows/`. `pyproject.toml` pins lower bounds only, so both workflows resolve floating
+  latest versions on every run. Until the Phase 11 hardening work lands, a compromised upstream
+  release enters CI — and any development checkout — unchecked. This is the row whose realized
+  threat exposes every provider credential, which is why it is stated here rather than left to the
+  blanket forward-reference disclaimer below.
+- **No `design.md` §21 row covers admin-scope privilege separation.** Boundary 4 — the admin API — is
+  the only surface that can change routing behavior at runtime, and
+  `/admin/v1/sessions/{id}/reroute` and `/pin` redirect every subsequent turn to a caller-chosen
+  candidate, an unauthorized-routing and cost-abuse primitive that bypasses the policy layer.
+  Scope confusion between an inference token and an admin token is *Elevation of privilege*, but the
+  admin API appears in the table only as a parenthetical inside the *Local port accessed by another
+  process* row, which is classified *Spoofing*. The control therefore rests on `SECURITY.md`
+  invariant 1 and that parenthetical alone. Phase 2 must deliver a distinct admin authentication
+  scope per `design.md` §5.3. The table is fixed at fourteen rows because §21 is authoritative, and
+  §21 predates the boundary analysis in this document — so this is a gap in the source, worth
+  raising upstream rather than patching locally by adding a fifteenth row.
 - **Most mitigations in the table are forward references.** As of Phase 1 only the fail-closed
   compatibility probe and the schema-validation groundwork exist. Every other row names an unwritten
   module. The table is a commitment, not a description of the current implementation.

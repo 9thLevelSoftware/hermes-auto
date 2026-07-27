@@ -17,8 +17,8 @@ The wrapper is not a stylistic choice. ``outcome-event.v1.schema.json`` sets
 placed *inside* an event can never validate. The join key therefore lives beside
 the event, and only ``entry["event"]`` is ever validated against the schema.
 
-Two invariants
---------------
+Three invariants
+----------------
 **Unknown cost is never zero.** ``actual_cost_usd`` is nullable and null means
 *unknown* — an unpriced local candidate, or a provider that did not report a
 figure. Only known values are summed into :attr:`MetricSummary.total_cost_usd`;
@@ -26,6 +26,22 @@ everything else is counted into :attr:`MetricSummary.unknown_cost_count`. This
 mirrors design.md §7.5 and is the single most important property in this module:
 without it a later phase could conclude that the candidate it knows least about
 is free.
+
+**No count is ever silently zero.** An absent count field means *not reported*
+and contributes 0, which is correct: the schema makes every measurement
+optional because collection is best-effort. A count that is *present but
+unusable* — negative, boolean, non-integral, or not a number at all — is not a
+measurement of zero, it is malformed input, and :func:`aggregate` raises
+:class:`~hermes_auto.evaluation.corpus.CorpusError` naming the field and the
+value. Integral floats such as ``4200.0`` are accepted and narrowed to ``int``,
+because any serializer that round-trips a count through a JSON number produces
+them and they carry the measurement exactly. Schema validation is not a
+substitute for this: JSON Schema's ``integer`` type matches any number with a
+zero fractional part, so ``4200.0`` satisfies ``outcome-event.v1`` and arrives
+here regardless. The failure this prevents is
+invisible by construction: a recorder emitting float token counts that were
+coerced to zero would render a ``cached_token_ratio`` of ``0.000000`` in a
+report that passes every determinism check and is byte-identical on repeat.
 
 **No field is ever ``nan`` or ``inf``.** Every ratio and mean divides by a
 denominator that can legitimately be zero — a group of entirely failed turns has
@@ -39,6 +55,8 @@ from __future__ import annotations
 
 import dataclasses
 import math
+
+from hermes_auto.evaluation.corpus import CorpusError
 
 __all__ = ["MetricSummary", "aggregate"]
 
@@ -154,11 +172,60 @@ def _percentile(values: list[float], percent: float) -> float:
     return float(ordered[index])
 
 
-def _as_count(value: object) -> int:
-    """Return *value* as a non-negative count, or 0 when absent or unusable."""
-    if isinstance(value, bool) or not isinstance(value, int):
+def _as_count(value: object, field: str, event_id: str) -> int:
+    """Return *value* as a non-negative count.
+
+    Args:
+        value: The raw value read from an outcome event. ``None`` and an absent
+            key both arrive here as ``None``.
+        field: Name of the event field, used in the error message.
+        event_id: ``event_id`` of the owning event, used in the error message.
+
+    Returns:
+        ``0`` when the field was not reported, otherwise the count. An integral
+        float is narrowed to :class:`int`: ``4200.0`` is the number 4200, and a
+        recorder that serialized its counters through a float must not be read
+        as having measured nothing.
+
+    Raises:
+        CorpusError: *value* is present but cannot be a count — negative, a
+            bool, a non-integral float, or a non-number. Every one of these
+            violates ``minimum: 0`` / ``type: integer`` in
+            ``outcome-event.v1.schema.json``, so none of them is a state a
+            well-formed recording can reach. Returning 0 instead would put a
+            wrong total into a report that renders cleanly and compares
+            byte-identical, which is precisely the defect this guard exists to
+            make impossible.
+    """
+    if value is None:
         return 0
-    return value if value > 0 else 0
+
+    if isinstance(value, bool):
+        raise CorpusError(
+            f"event {event_id!r} has {field} {value!r}; expected a non-negative "
+            "integer, not a boolean"
+        )
+
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise CorpusError(
+                f"event {event_id!r} has {field} {value!r}; a count must be a "
+                "whole number"
+            )
+        value = int(value)
+
+    if not isinstance(value, int):
+        raise CorpusError(
+            f"event {event_id!r} has {field} {value!r} of type "
+            f"{type(value).__name__}; expected a non-negative integer"
+        )
+
+    if value < 0:
+        raise CorpusError(
+            f"event {event_id!r} has {field} {value}; a count cannot be negative"
+        )
+
+    return value
 
 
 def _sorted_entries(runs: list[dict]) -> list[tuple[str, dict]]:
@@ -188,6 +255,11 @@ def aggregate(runs: list[dict]) -> MetricSummary:
     Returns:
         The aggregated summary. Every float field is rounded to six decimal
         places, and no field is ever ``nan`` or ``inf``.
+
+    Raises:
+        CorpusError: An event carries a count field that is present but not a
+            non-negative whole number. Reported rather than coerced to zero;
+            see the module docstring.
     """
     entries = _sorted_entries(runs)
 
@@ -206,11 +278,14 @@ def aggregate(runs: list[dict]) -> MetricSummary:
 
     for task_id, event in entries:
         task_ids.add(task_id)
+        event_id = str(event.get("event_id", ""))
 
         if event.get("turn_succeeded") is True:
             succeeded_tasks.add(task_id)
 
-        invalid_tool_calls += _as_count(event.get("invalid_tool_call_count"))
+        invalid_tool_calls += _as_count(
+            event.get("invalid_tool_call_count"), "invalid_tool_call_count", event_id
+        )
         if event.get("empty_response") is True:
             empty_responses += 1
 
@@ -231,9 +306,15 @@ def aggregate(runs: list[dict]) -> MetricSummary:
         if isinstance(latency, (int, float)) and not isinstance(latency, bool):
             latency_samples.append(float(latency))
 
-        total_input_tokens += _as_count(event.get("input_tokens"))
-        total_cached_tokens += _as_count(event.get("cached_tokens"))
-        total_tool_calls += _as_count(event.get("tool_call_count"))
+        total_input_tokens += _as_count(
+            event.get("input_tokens"), "input_tokens", event_id
+        )
+        total_cached_tokens += _as_count(
+            event.get("cached_tokens"), "cached_tokens", event_id
+        )
+        total_tool_calls += _as_count(
+            event.get("tool_call_count"), "tool_call_count", event_id
+        )
 
     distinct_task_count = len(task_ids)
     succeeded_count = len(succeeded_tasks)

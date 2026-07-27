@@ -7,17 +7,23 @@ actually demands — is that the same recorded input always yields the same byte
 
 Nothing here calls a provider, opens a socket, or reads a credential.
 
-Five properties are enforced:
+Eight properties are enforced:
 
 1. Identical inputs render byte-identical output.
 2. ``--runs`` argument order does not reach the output.
 3. The working directory does not reach the output.
 4. No aggregate is ever ``nan`` or ``inf``, including on a zero-success group.
 5. Unknown cost is counted, never valued at zero.
+6. A count that arrived as an integral float still aggregates as that number.
+7. A count that cannot be a count is raised, never coerced to zero.
+8. A structurally malformed run raises ``CorpusError``, not ``AttributeError``.
 
-Property 5 is the one with teeth. If it regressed, every later phase would
-silently treat an unpriced candidate as free, and the design.md §15.4 "at least
-20% cost reduction" gate would be measured against a fiction.
+Properties 5 through 7 are the ones with teeth, and they fail the same way:
+quietly, in a report that renders cleanly and compares byte-identical. If 5
+regressed, every later phase would treat an unpriced candidate as free and the
+design.md §15.4 "at least 20% cost reduction" gate would be measured against a
+fiction. If 6 or 7 regressed, ``cached_token_ratio`` — a headline claim of the
+project — would read exactly ``0.000000`` with nothing anywhere to say why.
 """
 
 from __future__ import annotations
@@ -72,7 +78,10 @@ def make_event(event_id: str, **overrides: object) -> dict:
         "event_id": event_id,
         "event_type": "turn_completed",
         "occurred_at": "2026-01-07T00:00:00Z",
-        "root_session_hash": "0f0e0d0c0b0a0909",
+        # 64 lowercase hex characters: the outcome-event schema constrains this
+        # field to a digest by pattern, so a synthetic event that is not one
+        # would be untestable against the schema it claims to be shaped like.
+        "root_session_hash": "0f0e0d0c0b0a0909" * 4,
         "lane_id": "lane-synthetic",
     }
     event.update(overrides)
@@ -244,6 +253,213 @@ def test_unknown_cost_is_excluded_from_the_sum() -> None:
     # Cost per success is computed over known cost only and is therefore an
     # UNDERSTATEMENT whenever unknown_cost_count is non-zero.
     assert summary.mean_cost_per_succeeded_task == 0.125
+
+
+# --------------------------------------------------------------------------- #
+# Count correctness
+# --------------------------------------------------------------------------- #
+
+
+def test_integral_float_counts_aggregate_as_their_value() -> None:
+    """``4200.0`` is the number 4200, not an unreadable value worth zero.
+
+    JSON has one number type, so any recorder that round-trips its counters
+    through a float — or through a language whose default number is a double —
+    emits these. Schema validation does not catch it and is not meant to:
+    ``type: integer`` matches any number with a zero fractional part, so
+    ``4200.0`` validates and arrives here intact. Reading them as zero produced
+    a report with
+    ``cached_token_ratio: 0.000000`` that rendered cleanly, passed every
+    determinism check, and was byte-identical on repeat. Invisible by
+    construction, which is why it is pinned here.
+    """
+    run = make_run(
+        "cheapest-only",
+        [
+            (
+                "bug-fix-null-deref-01",
+                make_event(
+                    "evt_float",
+                    input_tokens=4200.0,
+                    cached_tokens=1800.0,
+                    tool_call_count=6.0,
+                    invalid_tool_call_count=0.0,
+                    turn_succeeded=True,
+                ),
+            )
+        ],
+    )
+
+    summary = aggregate([run])
+
+    assert summary.total_input_tokens == 4200
+    assert summary.total_cached_tokens == 1800
+    assert summary.total_tool_calls == 6
+    assert summary.cached_token_ratio == round(1800 / 4200, 6)
+    # Narrowed to int, not left as a float that would render as a quoted decimal
+    # string in the JSON report and silently change the report's shape.
+    assert isinstance(summary.total_input_tokens, int)
+    assert not isinstance(summary.total_input_tokens, float)
+
+
+def test_float_and_int_counts_aggregate_identically() -> None:
+    """The serializer that produced a recording must not change its numbers."""
+    as_int = make_run(
+        "cheapest-only",
+        [
+            (
+                "bug-fix-null-deref-01",
+                make_event("evt_n", input_tokens=4200, cached_tokens=1800),
+            )
+        ],
+    )
+    as_float = make_run(
+        "cheapest-only",
+        [
+            (
+                "bug-fix-null-deref-01",
+                make_event("evt_n", input_tokens=4200.0, cached_tokens=1800.0),
+            )
+        ],
+    )
+
+    assert aggregate([as_int]) == aggregate([as_float])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("input_tokens", -500),
+        ("cached_tokens", -1),
+        ("tool_call_count", -3),
+        ("invalid_tool_call_count", -1),
+        ("input_tokens", 4200.5),
+        ("input_tokens", "4200"),
+        ("tool_call_count", True),
+        ("cached_tokens", [1800]),
+    ],
+)
+def test_unusable_count_is_raised_not_silently_zeroed(
+    field: str, value: object
+) -> None:
+    """A count that cannot be a count is malformed input, not a measurement of 0.
+
+    This is the distinction that separates a count from a cost. A null
+    ``actual_cost_usd`` is *meaningful* — an unpriced local candidate — so it is
+    counted and reported. ``input_tokens: -500`` has no reading under which it
+    is real: it violates ``type: integer, minimum: 0`` in the outcome-event
+    schema. Coercing it to 0 puts a wrong total into a report that renders
+    cleanly, so it is raised instead and reaches the operator as exit code 2.
+    """
+    run = make_run(
+        "cheapest-only",
+        [("bug-fix-null-deref-01", make_event("evt_bad", **{field: value}))],
+    )
+
+    with pytest.raises(CorpusError) as excinfo:
+        aggregate([run])
+
+    message = str(excinfo.value)
+    assert field in message
+    assert "evt_bad" in message
+
+
+def test_absent_count_is_zero_not_an_error() -> None:
+    """Not reported is not malformed.
+
+    Every measurement field is optional in the schema because collection is
+    best-effort; an event that omits ``cached_tokens`` contributes nothing and
+    must not fail the run.
+    """
+    run = make_run(
+        "cheapest-only",
+        [("bug-fix-null-deref-01", make_event("evt_sparse", turn_succeeded=True))],
+    )
+
+    summary = aggregate([run])
+
+    assert summary.total_input_tokens == 0
+    assert summary.total_cached_tokens == 0
+    assert summary.total_tool_calls == 0
+    assert summary.cached_token_ratio == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Structural faults surface as CorpusError, never AttributeError
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("label", "runs"),
+    [
+        ("run is an array", [[{"strategy": "cheapest-only", "events": []}]]),
+        ("run is a string", ["oops"]),
+        ("events is a string", [{"strategy": "cheapest-only", "events": "oops"}]),
+        ("events is a mapping", [{"strategy": "cheapest-only", "events": {}}]),
+        ("entry is a string", [{"strategy": "cheapest-only", "events": ["nope"]}]),
+        (
+            "event is a string",
+            [
+                {
+                    "strategy": "cheapest-only",
+                    "events": [
+                        {"task_id": "bug-fix-null-deref-01", "event": "notadict"}
+                    ],
+                }
+            ],
+        ),
+        (
+            "event is absent",
+            [
+                {
+                    "strategy": "cheapest-only",
+                    "events": [{"task_id": "bug-fix-null-deref-01"}],
+                }
+            ],
+        ),
+    ],
+)
+def test_malformed_run_raises_corpus_error(corpus, label: str, runs: list) -> None:
+    """A malformed run file must be diagnosable as such.
+
+    Each of these shapes previously escaped ``build_report`` as an uncaught
+    ``AttributeError`` and exited 1, which an operator cannot distinguish from a
+    broken harness. Phase 8 generates these files programmatically and Phase 9+
+    diffs reports against Phase 1's, so "your input is wrong" has to be a
+    reportable outcome rather than a stack trace.
+    """
+    with pytest.raises(CorpusError) as excinfo:
+        build_report(corpus, runs)
+
+    assert str(excinfo.value), f"{label}: raised an empty message"
+
+
+def test_malformed_run_error_names_the_offending_index(corpus, run_a) -> None:
+    """The index is the whole diagnostic value on a multi-file invocation."""
+    with pytest.raises(CorpusError) as excinfo:
+        build_report(corpus, [run_a, ["not", "a", "run"]])
+
+    message = str(excinfo.value)
+    assert "index 1" in message
+    assert "list" in message
+
+
+def test_malformed_event_error_names_the_entry_position(corpus) -> None:
+    run = {
+        "strategy": "cheapest-only",
+        "events": [
+            {"task_id": "bug-fix-null-deref-01", "event": make_event("evt_ok")},
+            {"task_id": "bug-fix-off-by-one-02", "event": "notadict"},
+        ],
+    }
+
+    with pytest.raises(CorpusError) as excinfo:
+        build_report(corpus, [run])
+
+    message = str(excinfo.value)
+    assert "position 1" in message
+    assert "'event'" in message
+    assert "str" in message
 
 
 # --------------------------------------------------------------------------- #

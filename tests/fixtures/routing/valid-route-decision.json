@@ -1,6 +1,6 @@
 {
-  "decision_id": "dec_test_0000000001",
-  "root_session_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "decision_id": "dec_test0000000001",
+  "root_session_hash": "03b276acf8d3c14651148e5f1ab6707c9844bd33694a476c3c8748dc0481737e",
   "lane_id": "lane_test_main",
   "cache_epoch": 4,
   "turn_id": 12,

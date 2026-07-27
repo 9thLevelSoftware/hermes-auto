@@ -196,11 +196,8 @@ are executed.
 
 - [`adr/README.md`](adr/README.md) — ADR template, numbering convention, and index.
 - [`threat-model.md`](threat-model.md) — security and privacy threat model mapping each identified
-  threat to the module that mitigates it. *Created in a later plan of this phase.*
+  threat to the module that mitigates it.
 - [`privacy.md`](privacy.md) — the user-facing privacy guide, derived from
-  [ADR-0004](adr/0004-local-telemetry-and-privacy.md). *Created in a later plan of this phase.*
+  [ADR-0004](adr/0004-local-telemetry-and-privacy.md).
 - [`evaluation.md`](evaluation.md) — the baseline corpus, measurement harness, and evaluation
-  program. *Created in a later plan of this phase.*
-
-The last three links are **intentional forward references**. They point at documents owned by later
-plans in this phase and are expected to be unresolved until those plans land.
+  program.

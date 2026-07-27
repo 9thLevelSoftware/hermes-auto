@@ -53,7 +53,8 @@ Hermes CLI / TUI / Gateway / Desktop / Cron / Subagents
 **Phase 1 — contracts and schemas, pre-implementation.**
 
 This repository currently contains the packaging contract, the package skeleton, versioned schemas,
-architecture decision records, the threat model, and a fixed-model baseline harness. **No production
+architecture decision records, the threat model, the privacy guide, the evaluation methodology, and a
+fixed-model baseline harness. **No production
 routing logic exists yet**: feature extraction, eligibility filtering, scoring, and candidate
 selection arrive in later phases. The public contracts are being frozen first, deliberately, so that
 routing is built against schemas that are already stable.
@@ -78,6 +79,7 @@ python -m venv .venv
 - [Architecture and decision records](docs/architecture.md)
 - [Threat model](docs/threat-model.md)
 - [Privacy and telemetry](docs/privacy.md)
+- [Evaluation methodology](docs/evaluation.md)
 
 The full design specification lives in [`design.md`](design.md) at the repository root.
 

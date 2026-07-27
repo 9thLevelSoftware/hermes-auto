@@ -32,6 +32,7 @@ __all__ = [
     "BaselineTask",
     "CorpusError",
     "load_corpus",
+    "require_mapping",
 ]
 
 #: The only corpus schema version this loader understands. A corpus declaring a
@@ -97,7 +98,14 @@ class BaselineTask:
     verifiable: bool
 
 
-def _require_mapping(value: object, what: str) -> dict:
+def require_mapping(value: object, what: str) -> dict:
+    """Return *value* as a mapping, or raise :class:`CorpusError` naming its type.
+
+    Public because :mod:`hermes_auto.evaluation.baselines` guards recorded-run
+    structure with the same rule. One helper, one message format: an operator
+    reading ``... must be a mapping, found list`` should not have to know whether
+    the offending file was a corpus or a recorded run to recognize the shape.
+    """
     if not isinstance(value, dict):
         raise CorpusError(f"{what} must be a mapping, found {type(value).__name__}")
     return value
@@ -135,7 +143,7 @@ def load_corpus(path: str | pathlib.Path) -> list[BaselineTask]:
     except yaml.YAMLError as exc:
         raise CorpusError(f"{corpus_path}: not parseable as YAML: {exc}") from exc
 
-    document = _require_mapping(document, f"{corpus_path}: top-level document")
+    document = require_mapping(document, f"{corpus_path}: top-level document")
 
     version = document.get("version")
     if version != SUPPORTED_CORPUS_VERSION:
@@ -155,7 +163,7 @@ def load_corpus(path: str | pathlib.Path) -> list[BaselineTask]:
     seen: set[str] = set()
 
     for position, raw in enumerate(raw_tasks):
-        entry = _require_mapping(raw, f"{corpus_path}: task at position {position}")
+        entry = require_mapping(raw, f"{corpus_path}: task at position {position}")
 
         task_id = entry.get("task_id")
         if not isinstance(task_id, str) or not task_id:

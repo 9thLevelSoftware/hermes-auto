@@ -79,4 +79,79 @@ jobs:
       # catch.
       - name: Assert every schema is discoverable
         run: |
-          python -c "from hermes_auto.gateway.schemas import load_schemas; s = load_schemas(); assert len(s) >= 7, sorted(s)"
+          python -c "from hermes_auto.gateway.schemas import load_schemas; s = load_schemas(); assert len(s) == 7, sorted(s)"
+
+  package:
+    name: Wheel packaging
+    runs-on: ubuntu-latest
+    # The schema-validation job above installs the project as EDITABLE, so its
+    # SCHEMA_ROOT resolves into the source tree and it proves nothing about what
+    # actually ships. `package-data` globs are a common silent packaging failure:
+    # drop the "data/schema/**/*.json" line from pyproject.toml and every
+    # in-repo gate stays green while the wheel carries zero schemas and
+    # load_schemas() returns {} for every installed copy. This job is the only
+    # one that inspects and then exercises the built artifact.
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # Built into the runner temp directory rather than the workspace so the
+      # artifact cannot be confused with a checked-out file or picked up by a
+      # later step's glob.
+      - name: Build the wheel
+        env:
+          WHEEL_DIR: ${{ runner.temp }}/dist-check
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip wheel --no-deps -w "$WHEEL_DIR" .
+
+      # Exactly seven, not "at least seven": a >= comparison cannot detect a
+      # stray eighth schema or a duplicate landing at the tree root.
+      - name: Assert the wheel carries the full schema payload
+        env:
+          WHEEL_DIR: ${{ runner.temp }}/dist-check
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+          import zipfile
+
+          wheel_dir = os.environ["WHEEL_DIR"]
+          wheels = sorted(glob.glob(os.path.join(wheel_dir, "*.whl")))
+          assert len(wheels) == 1, wheels
+
+          names = zipfile.ZipFile(wheels[0]).namelist()
+          schemas = sorted(n for n in names if n.endswith(".schema.json"))
+          print("\n".join(schemas))
+          assert len(schemas) == 7, schemas
+          assert "hermes_auto/py.typed" in names, sorted(names)
+          PY
+
+      # The step that matters. Everything else in this workflow imports from a
+      # source tree; this imports from the installed artifact a user would get.
+      - name: Install the wheel into a clean virtualenv and load the schemas
+        env:
+          WHEEL_DIR: ${{ runner.temp }}/dist-check
+          VENV_DIR: ${{ runner.temp }}/wheel-venv
+        run: |
+          python -m venv "$VENV_DIR"
+          # bin on the runner; the Scripts fallback lets a maintainer run this
+          # exact snippet on the Windows platform the sidecar also supervises.
+          if [ -x "$VENV_DIR/bin/python" ]; then
+            VENV_PY="$VENV_DIR/bin/python"
+          else
+            VENV_PY="$VENV_DIR/Scripts/python.exe"
+          fi
+          # No -e, no PYTHONPATH, and cwd is not the repository root, so an
+          # importable hermes_auto can only come from the installed wheel.
+          "$VENV_PY" -m pip install --upgrade pip
+          "$VENV_PY" -m pip install "$WHEEL_DIR"/*.whl
+          cd "$VENV_DIR"
+          "$VENV_PY" -c "from hermes_auto.gateway.schemas import load_schemas; s = load_schemas(); assert len(s) == 7, sorted(s); print(len(s), 'schemas loaded from the installed wheel')"

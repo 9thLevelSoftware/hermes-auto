@@ -99,7 +99,11 @@ the user-facing privacy documentation from it**, and Phase 8 implements the SQLi
   diagnosable only from a user-supplied reproduction.
 - **Salted hashing makes cross-machine correlation impossible by design.** The salt is local, so the
   same conversation on two machines hashes differently. Fleet-level analysis across installs is not
-  merely disabled — it is unavailable, and no future feature can quietly re-enable it.
+  merely disabled: `root_session_hash` is constrained to `^[0-9a-f]{64}$` in both
+  `outcome-event.v1` and `route-decision.v1`, so only a fixed-width local-salt digest validates and
+  a raw, cross-machine-stable session id cannot be written to the field at all. Re-enabling
+  correlation means widening that pattern, which requires a schema version bump and the review that
+  implies — it is not a change a future feature can make quietly.
 - **Training corpora for the learning phases require an explicit separate opt-in** rather than
   reusing the default store. The default store's contents are deliberately too thin to train a
   requirement predictor on, so the learning track carries its own consent and its own collection

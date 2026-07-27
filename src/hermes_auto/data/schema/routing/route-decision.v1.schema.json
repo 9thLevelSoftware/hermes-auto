@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hermes-auto-router.dev/schema/routing/route-decision.v1.json",
   "title": "RouteDecision explainability record (v1)",
-  "description": "The explainability record every route produces (design.md §12). It is derived only from router inputs, router scores, and router policy. It is never derived from hidden model reasoning, and the router must not expose or attempt to generate such reasoning. The record deliberately cannot round-trip the request: it carries no prompt text, no message content, no tool arguments, no tool results, and no credential values — only identifiers, numeric scores, and machine-readable reason codes. Session identity appears only as a locally salted hash (ADR-0004, design.md §13.1). `selected` is not constrained to equal `ranked[0].candidate`, because a health veto (design.md §7.10) legitimately selects a lower-ranked candidate, and `ranked` may be empty when every candidate was hard-excluded, in which case `excluded` carries the explanation and `selected` is null.",
+  "description": "The explainability record every route produces (design.md §12). It is derived only from router inputs, router scores, and router policy. It is never derived from hidden model reasoning, and the router must not expose or attempt to generate such reasoning. The record deliberately cannot round-trip the request: it carries no prompt text, no message content, no tool arguments, no tool results, and no credential values. Its contents are identifiers, numeric scores, machine-readable reason codes, and ONE bounded free-text channel — `excluded[].reasons[]`, capped at 200 characters per entry — which carries router-authored diagnostics such as `context window 65536 < required 84211` and is derived from limits, policy, or health, never from request content. Every identifier is value-constrained, not merely name-allowlisted: `root_session_hash` must match `^[0-9a-f]{64}$` (a fixed-width local-salt digest that structurally cannot hold a raw Hermes session id or prompt text, ADR-0004, design.md §13.1), `decision_id` is anchored at both ends, and `lane_id`, candidate ids, and `selected` are bounded identifier tokens. `selected` is not constrained to equal `ranked[0].candidate`, because a health veto (design.md §7.10) legitimately selects a lower-ranked candidate, and `ranked` may be empty when every candidate was hard-excluded, in which case `excluded` carries the explanation and `selected` is null.",
   "type": "object",
   "required": [
     "decision_id",
@@ -21,19 +21,19 @@
   "properties": {
     "decision_id": {
       "type": "string",
-      "pattern": "^dec_",
-      "minLength": 5,
-      "description": "Opaque decision identifier, prefixed `dec_` (design.md §12)."
+      "pattern": "^dec_[A-Za-z0-9]{1,64}$",
+      "description": "Opaque decision identifier, prefixed `dec_` (design.md §12). Anchored at BOTH ends: a prefix-only `^dec_` would have accepted `dec_` followed by an arbitrary payload."
     },
     "root_session_hash": {
       "type": "string",
-      "minLength": 1,
-      "description": "The root session identifier hashed with a local salt — never the raw Hermes session id (ADR-0004, design.md §13.1). The salt is local, so this value is not correlatable across machines."
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "The root session identifier hashed with a local salt — never the raw Hermes session id (ADR-0004, design.md §13.1). The pattern is what makes that structural: only a 64-character lowercase hex digest validates, so a raw session id, a prompt, or a credential cannot be written here. The salt is local, so this value is not correlatable across machines."
     },
     "lane_id": {
       "type": "string",
-      "minLength": 1,
-      "description": "Opaque lane identifier within the root session (design.md §6.2, ADR-0002)."
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Opaque lane identifier within the root session (design.md §6.2, ADR-0002). Bounded length and an identifier-only character class keep it a handle rather than a text field."
     },
     "cache_epoch": {
       "type": "integer",
@@ -75,14 +75,15 @@
         "properties": {
           "candidate": {
             "type": "string",
-            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
             "description": "The `id` of the excluded candidate's model card."
           },
           "reasons": {
             "type": "array",
             "minItems": 1,
-            "description": "Non-empty list of exclusion reasons. Each is a router-authored diagnostic string derived from limits, policy, or health — never from request content.",
-            "items": { "type": "string", "minLength": 1 }
+            "description": "Non-empty list of exclusion reasons. Each is a router-authored diagnostic string derived from limits, policy, or health — never from request content. This is the only free-text channel in the record and it is deliberately bounded: `maxLength` 200 is comfortably above the design.md §12 example (`context window 65536 < required 84211`) and far below anything that could hold a prompt, a tool-result body, or a stack trace.",
+            "items": { "type": "string", "minLength": 1, "maxLength": 200 }
           }
         }
       }
@@ -97,7 +98,8 @@
         "properties": {
           "candidate": {
             "type": "string",
-            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
             "description": "The `id` of the ranked candidate's model card."
           },
           "shortfall": {
@@ -135,11 +137,15 @@
     },
     "selected": {
       "type": ["string", "null"],
-      "description": "The `id` of the selected candidate, or null for a structured failure in which no hard-eligible candidate remained. Deliberately NOT constrained to equal `ranked[0].candidate`: a health veto (design.md §7.10) selects a lower-ranked candidate and must remain representable."
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "The `id` of the selected candidate, or null for a structured failure in which no hard-eligible candidate remained. `maxLength` and `pattern` apply only to the string branch; JSON Schema ignores both for null, so the null case stays representable. Deliberately NOT constrained to equal `ranked[0].candidate`: a health veto (design.md §7.10) selects a lower-ranked candidate and must remain representable."
     },
     "reason_codes": {
       "type": "array",
-      "description": "Machine-readable reason codes for this decision, drawn from the frozen twelve-code vocabulary in design.md §12. The enum is exactly twelve values; it is a frozen contract and must not be widened without a schema version bump.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Machine-readable reason codes for this decision, drawn from the frozen twelve-code vocabulary in design.md §12. The enum is exactly twelve values; it is a frozen contract and must not be widened without a schema version bump. `minItems: 1` makes the selection path as explainable as the exclusion path — `excluded[].reasons` already requires a reason, so a decision that emitted zero reason codes would leave the *selection* unexplained. `uniqueItems` rejects the same code repeated, which is noise rather than emphasis.",
       "items": {
         "type": "string",
         "enum": [

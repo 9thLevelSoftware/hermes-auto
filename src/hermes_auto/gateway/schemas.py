@@ -22,8 +22,10 @@ import json
 import pathlib
 
 import jsonschema
+import referencing
+import referencing.jsonschema
 
-__all__ = ["SCHEMA_ROOT", "SchemaLoadError", "load_schemas", "validate"]
+__all__ = ["SCHEMA_ROOT", "SchemaLoadError", "build_registry", "load_schemas", "validate"]
 
 #: Root of the packaged schema tree. Every ``*.schema.json`` beneath it, at any
 #: depth, is discoverable by :func:`load_schemas`.
@@ -108,12 +110,47 @@ def load_schemas(root: pathlib.Path | None = None) -> dict[str, dict]:
     return schemas
 
 
+def build_registry(schemas: dict[str, dict]) -> referencing.Registry:
+    """Return a ``referencing`` registry covering every schema in *schemas*.
+
+    Without this, a ``$ref`` naming another file by its ``$id`` is
+    unresolvable, and a cross-file reference silently degrades: the referencing
+    schema behaves as though the constraint were absent, or -- worse -- raises
+    a ``referencing`` error that is neither :class:`SchemaLoadError` nor
+    ``jsonschema.ValidationError``. Registering the whole mapping is what makes
+    ``_hermes_auto`` in the request schema actually enforce the metadata
+    envelope's rules rather than being a bare ``{"type": "object"}``.
+
+    ``default_specification`` is supplied because a registered schema is not
+    required to declare ``$schema``; the packaged ones do, and theirs wins.
+    """
+    return referencing.Registry().with_resources(
+        (
+            schema_id,
+            referencing.Resource.from_contents(
+                schema,
+                default_specification=referencing.jsonschema.DRAFT202012,
+            ),
+        )
+        for schema_id, schema in schemas.items()
+    )
+
+
 def validate(
     instance: object,
     schema_id: str,
     schemas: dict[str, dict] | None = None,
 ) -> None:
     """Validate *instance* against the schema registered under *schema_id*.
+
+    Every schema in the mapping is registered as a resolvable resource first,
+    so a ``$ref`` to another file's ``$id`` resolves. Which schemas the mapping
+    contains therefore matters: validating a schema whose ``$ref`` targets a
+    file the caller did not load raises
+    ``jsonschema.exceptions._WrappedReferencingError`` (a subclass of
+    ``jsonschema.exceptions._RefResolutionError``), not
+    ``jsonschema.ValidationError``. Pass a mapping that covers the reference
+    closure -- in practice a bare :func:`load_schemas` over the whole root.
 
     Args:
         instance: The parsed value to check.
@@ -127,6 +164,8 @@ def validate(
             that are available.
         jsonschema.ValidationError: *instance* does not satisfy the schema.
             Propagated unchanged so callers keep the full error path.
+        jsonschema.exceptions._RefResolutionError: The schema contains a
+            ``$ref`` to an ``$id`` absent from *schemas*.
     """
     registry = load_schemas() if schemas is None else schemas
 
@@ -135,4 +174,8 @@ def validate(
             f"unknown schema id {schema_id!r}; available: {sorted(registry)}"
         )
 
-    jsonschema.validate(instance=instance, schema=registry[schema_id])
+    jsonschema.validate(
+        instance=instance,
+        schema=registry[schema_id],
+        registry=build_registry(registry),
+    )

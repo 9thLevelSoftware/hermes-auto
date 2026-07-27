@@ -14,6 +14,12 @@ Usage::
         --runs tests/fixtures/baseline/recorded-run-b.json \\
         --format json
 
+Every recorded event is validated against ``outcome-event.v1`` before anything
+is aggregated. Pass ``--no-validate`` to skip that pass. Validation is on by
+default because the aggregator's inputs are generated programmatically from
+Phase 8 onward, and an unvalidated count field of the wrong type is the kind of
+fault that produces a clean-looking report with a wrong number in it.
+
 Two invocations with the same inputs produce byte-identical output, in any
 order, from any working directory. That is the phase's reproducibility
 criterion, and it is what lets a Phase 8 report be diffed against a Phase 1 one.
@@ -33,12 +39,28 @@ _SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+import jsonschema  # noqa: E402
+
 from hermes_auto.evaluation.baselines import (  # noqa: E402
     build_report,
+    check_run_shapes,
     render_json,
     render_markdown,
 )
 from hermes_auto.evaluation.corpus import CorpusError, load_corpus  # noqa: E402
+from hermes_auto.gateway.schemas import (  # noqa: E402
+    SchemaLoadError,
+    load_schemas,
+    validate,
+)
+
+#: ``$id`` of the schema every ``entry["event"]`` is checked against. Only the
+#: event is validated, never the entry that wraps it: the schema sets
+#: ``additionalProperties: false`` and defines no ``task_id``, so the join key
+#: lives beside the event by necessity.
+OUTCOME_EVENT_SCHEMA_ID = (
+    "https://hermes-auto-router.dev/schema/routing/outcome-event.v1.json"
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,11 +95,81 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Write to this path instead of stdout.",
     )
+    parser.add_argument(
+        "--no-validate",
+        dest="validate",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip validating each recorded event against outcome-event.v1. "
+            "Validation is on by default; this exists so a later phase can "
+            "profile aggregation without the schema pass in the measurement."
+        ),
+    )
     return parser
 
 
+def validate_events(runs: list[dict]) -> None:
+    """Validate every ``entry["event"]`` against ``outcome-event.v1``.
+
+    The schema already declares ``type: integer, minimum: 0`` for all six count
+    fields and bounded patterns for every string, so this pass rejects a
+    malformed recording at the boundary — before any number reaches an
+    aggregate — rather than after it has been folded into a total.
+
+    Schemas are loaded once and reused across every event; :func:`validate`
+    re-reads the whole schema tree when it is not handed a mapping.
+
+    Args:
+        runs: Parsed recorded-run mappings, already shape-checked here.
+
+    Raises:
+        CorpusError: A run is structurally malformed, or an event does not
+            satisfy the schema. A schema violation is re-raised as
+            ``CorpusError`` and not as ``jsonschema.ValidationError`` so the
+            caller keeps one exit path for "your input is bad"; the offending
+            field path and message are carried through in the text.
+        SchemaLoadError: The packaged schema tree is unreadable or does not
+            carry ``outcome-event.v1``. A broken installation, not a bad run
+            file, and reported as such.
+    """
+    check_run_shapes(runs)
+    schemas = load_schemas()
+
+    # Checked once, up front, rather than left to surface as a KeyError from
+    # validate() on the first event. A missing schema is a property of the
+    # installation, so discovering it per-event would be both repetitive and
+    # misattributed to whichever event happened to be validated first.
+    if OUTCOME_EVENT_SCHEMA_ID not in schemas:
+        raise SchemaLoadError(
+            f"the packaged schema tree does not carry "
+            f"{OUTCOME_EVENT_SCHEMA_ID}; available: {sorted(schemas)}"
+        )
+
+    for index, run in enumerate(runs):
+        for position, entry in enumerate(run.get("events", ())):
+            try:
+                validate(entry["event"], OUTCOME_EVENT_SCHEMA_ID, schemas)
+            except jsonschema.ValidationError as exc:
+                path = "/".join(str(part) for part in exc.absolute_path) or "(root)"
+                raise CorpusError(
+                    f"recorded run at index {index}, event entry at position "
+                    f"{position} (task_id {entry.get('task_id')!r}): event fails "
+                    f"outcome-event.v1 at {path}: {exc.message}"
+                ) from exc
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Render the report. Returns 0 on success, 2 on a corpus or run error."""
+    """Render the report.
+
+    Returns:
+        ``0`` on success and ``2`` on any bad input — an unreadable or invalid
+        corpus, an unreadable or unparseable run file, a structurally malformed
+        run, an event that fails ``outcome-event.v1``, an unknown strategy, or
+        an unknown ``task_id``. Exit ``2`` is the contract: an operator has to be
+        able to distinguish "your run file is malformed" from a crashed harness,
+        and every one of these used to be reachable as an uncaught traceback.
+    """
     args = build_parser().parse_args(argv)
 
     # Sort the inputs so argument order cannot reach the output. Aggregation
@@ -105,9 +197,18 @@ def main(argv: list[str] | None = None) -> int:
     sources = tuple(sorted(path.name for path in run_paths))
 
     try:
+        if args.validate:
+            validate_events(runs)
         report = build_report(corpus, runs, sources=sources)
     except CorpusError as exc:
         print(f"benchmark: {exc}", file=sys.stderr)
+        return 2
+    except SchemaLoadError as exc:
+        # A broken installation, not a bad run file, so it is reported
+        # distinctly rather than folded into the message above. Deliberately
+        # NOT catching KeyError alongside it: a stray KeyError from aggregation
+        # is a harness bug and must not be mislabelled as a missing schema.
+        print(f"benchmark: schema unavailable: {exc}", file=sys.stderr)
         return 2
 
     rendered = render_json(report) if args.format == "json" else render_markdown(report)
