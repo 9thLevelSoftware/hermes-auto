@@ -1,13 +1,13 @@
 # Project State
 
 ## Current Position
-- **Phase**: 2 of 11 (planned)
-- **Status**: Phase 2 planned — 9 plans across 5 waves, auto-pipeline critique applied
-- **Last Activity**: Phase 2 planning (2026-07-27)
+- **Phase**: 2 of 11 (executing — wave 1 of 5 complete)
+- **Status**: Phase 2 wave 1 complete — 3/9 plans, 483 tests passing (was 206)
+- **Last Activity**: Phase 2 wave 1 execution (2026-07-27)
 
 ## Progress
 ```
-[###·················] 14% — 7/47 plans complete
+[####················] 19% — 10/52 plans complete
 ```
 
 ## Phase 1 Review
@@ -68,6 +68,32 @@ Architecture: **Pragmatic** (Starlette + uvicorn + httpx, async, opaque-dict pas
 
 Critique verdict REWORK at 19% completeness; five execution-breaking findings auto-refined, including an admin listener nothing started and a `session_id or ""` that would 400 every auxiliary call. 13 of 22 gaps were vacuous verification commands — Phase 1's finding F6 at 4x density.
 
+## Phase 2 Wave 1 Results
+All 3 plans Complete with Warnings. 68 verification commands run, 65 passed.
+
+**All three failures were the same guard defect**, reported independently by all three agents and
+fixed in plans 02-04 … 02-09 before Wave 2 dispatch. The whole-tree `git status --porcelain -- <many
+paths>` idiom asserts a *phase*-level property from inside one plan: during a parallel wave it can
+only report siblings' legitimate work, and 02-02's version contradicted its own plan's authorized
+`EXPECTED_SCHEMA_IDS` edit — it would have failed with no siblings running at all. Replaced with a
+frozen-asset guard over 12 paths no Phase 2 plan owns, plus the `design.md` blob pin. Proven
+non-vacuous: fails on a touched routing schema, passes when restored, ignores a Wave 2 deliverable.
+
+**Highest-value find**: the repo has `core.autocrlf=true` and had no `.gitattributes`. Git was proved
+to rewrite `
+` → `
+` on checkout of a `.txt` file, so every SSE frame terminator would have
+differed between commit and checkout — invisible locally, breaking 02-04/02-08/02-09 in CI. Plan
+02-03 shipped an unplanned `tests/fixtures/sse/.gitattributes` and proved the fix by deleting all 12
+fixtures and restoring them from git byte-identically.
+
+**Vacuous verifications, third phase running.** Roughly 18 of 51 inline checks could pass while the
+work was wrong. The two sharpest: `V10` in 02-03 was `print([...] or 'complete')`, which exits 0
+whether or not the interface is missing methods; and `assert 'hmac' in getsource(m)` in 02-02 is
+satisfied by the `import hmac` line alone — proved empirically that unsalted `sha256(SALT + sid)`
+passes it while being exactly the construction the plan forbids. Every one was run as written *and*
+replaced with a stronger check.
+
 ## Open Items — raised by Phase 1 execution
 - **Phase 2**: no error-envelope schema exists. `wire/openai-error.v1.schema.json` is needed — context errors return the OpenAI error body, a different shape from `chat.completion`, currently unvalidated.
 - **Phase 2**: `pytest-asyncio` resolved to 1.4.0, which no longer defaults to a usable mode. Needs `asyncio_mode` in `[tool.pytest.ini_options]` or explicit markers before the first async test.
@@ -93,4 +119,24 @@ Critique verdict REWORK at 19% completeness; five execution-breaking findings au
 - ~~Pin the `design.md` revision~~ — blob `18bb54b36485fa0813ec67f84a74628a9eee3aae` at commit `331a69d`, recorded in `01-CONTEXT.md` with a verification command
 
 ## Next Action
-Run `/legion:build` to execute Phase 2: Provider Plugin & Passthrough Gateway
+Wave 2 of Phase 2 in progress (plans 02-04 gateway core, 02-05 provider plugin + shim)
+
+## Open Items — raised by Phase 2 Wave 1
+- **Wave 2 blocker check**: `starlette>=0.37` resolved to **1.3.1**, a major version past what the
+  floor implies. Plan 02-04's gateway text was written against the 0.3x ASGI / `StreamingResponse`
+  API. 02-04 must verify against 1.x before building, not after.
+- **02-08**: `error.code` is typed `["string","null"]`, but some OpenAI-compatible relays emit an
+  integer `code` (HTTP status). Under `gateway.strict_validation: true` that body fails validation on
+  a relay schema whose stated purpose is never to reject forwardable traffic — same class as the
+  `contentPart` defect Phase 1 found. Confirm in the fixture corpus.
+- **Unclaimed**: widen `test_descriptions_make_no_absolute_containment_claim` from the 3 routing
+  schemas to all 8. `CODEBASE.md` previously overclaimed that it already covered all of them.
+- **Phase 11**: `secure_write` has a residual Windows window — between `os.open` and `icacls` the
+  file exists with inherited ACLs. Closing it needs a security descriptor at creation (`pywin32`), a
+  dependency this phase refuses. Documented, not claimed closed.
+- **Phase 11**: no directory `fsync` after `os.replace` in `write_runtime`. Atomic, but not durable
+  across power loss on POSIX.
+- **Cleanup**: plan 02-01's Task 3 verification mints a real token into the developer's state
+  directory, and 02-02's mints a real salt beside it. Intended (they prove platform behavior) but
+  they are real artifacts, not fixtures.
+- **02-CONTEXT.md** says `.planning/CODEBASE.md` "does not exist." It does, and it is accurate.

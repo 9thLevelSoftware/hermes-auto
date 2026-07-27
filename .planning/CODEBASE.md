@@ -67,7 +67,7 @@ Phase 2 adds an eighth, `wire/openai-error.v1`.
 ## Conventions detected
 
 - **Frozen vocabularies are byte-exact.** Eight capability dimensions, ten domain tags, twelve reason codes, nine baseline strategies, nine corpus categories. All trace to a `design.md §N` citation. Changing one is a contract break.
-- **Value constraints, not absolute claims.** Every schema description states what is *bounded* and explicitly notes that value bounds constrain shape, not intent. A test walks all descriptions against 11 banned phrasings. This was learned the hard way across three review cycles.
+- **Value constraints, not absolute claims.** Every schema description states what is *bounded* and explicitly notes that value bounds constrain shape, not intent. Learned the hard way across three review cycles. **Enforcement is narrower than the rule**: `test_descriptions_make_no_absolute_containment_claim` is parametrized over the three *routing* schemas only — wire schemas are not covered by it. Plan 02-02 reproduced the `_OVERCLAIMS` list into `test_error_envelope_schema.py` so the 8th schema is subject to the rule. Widening the walker to all 8 is unclaimed work.
 - **Hoisted validators.** `validate()` re-runs `check_schema` at ~50 ms/call. Use `build_validator` on any path that runs more than once.
 - **Absent ≠ corrupt.** Recurring idiom: a missing file returns `None`/defaults; a present-but-malformed file raises a typed error.
 - **Unknown is never zero.** Null cost is counted separately, never summed. The single most load-bearing correctness rule in `metrics.py`.
@@ -81,7 +81,7 @@ Phase 2 adds an eighth, `wire/openai-error.v1`.
 - Read `gateway/schemas.py` before touching anything schema-adjacent — it is the highest fan-in module and the loader other phases depend on
 - Use `./.venv/Scripts/python.exe`, never the machine default
 - POSIX shell through the Bash tool; PowerShell will fail on `test`, `for … done`, and inline `VAR=x cmd`
-- Cross-plan guards use `git status --porcelain -- <path> | grep -q . && exit 1 || exit 0`
+- Cross-plan guards must name **frozen assets only** — paths no plan in the phase owns — using `git status --porcelain -- <frozen paths> | grep -q . && exit 1 || exit 0`. A whole-tree guard asserts a *phase*-level property from inside one plan; during a parallel wave it can only report siblings' legitimate work. That belongs at the phase-close gate. All three Wave 1 agents reported this independently.
 
 **Avoid**
 - `validate()` in a loop — use `build_validator`
@@ -103,7 +103,8 @@ Phase 2 adds an eighth, `wire/openai-error.v1`.
 | `gateway/schemas.py` | **Medium** | `$ref` resolution is registry-scoped: passing a *subset* mapping raises `referencing.exceptions.Unresolvable`, which is **not** a `ValidationError`. Phase 2 gateway code must call bare `load_schemas()` |
 | `evaluation/metrics.py` | **Medium** | JSON Schema `integer` matches `4200.0`, so schema validation cannot catch float counts. `_as_count`'s narrowing is the only guard |
 | `compatibility.py` | **Medium** | Hermes tags are CalVer (`v2026.7.20`) but the distribution is semver `0.19.0`. A CalVer range matches nothing — guarded by `test_calver_tag_is_not_treated_as_a_version` |
-| Windows paths | **Medium** | `os.chmod` is a no-op on ACLs. Any permission write needs an `icacls` readback |
+| Windows paths | **Medium** | `os.chmod` is a no-op on ACLs. Any permission write needs an `icacls` readback. The readback must be an **allowlist** (every ACE resolves to the current account) — a denylist naming `Everyone`/`Users`/`BUILTIN` misses `CodexSandboxUsers`, which is present on this machine |
+| `tests/fixtures/sse/**` | **High** | The repo has `core.autocrlf=true`. Without `tests/fixtures/sse/.gitattributes` (`*.txt -text -diff`), git rewrites `\n` → `\r\n` on checkout and every SSE frame terminator differs between commit and checkout — invisible locally, broken in CI. Do not remove that file |
 
 ## Test map
 
