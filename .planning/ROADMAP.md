@@ -181,7 +181,7 @@
 
 | Phase | Plans | Completed | Status |
 |-------|-------|-----------|--------|
-| 1. Contracts, Schemas & Baselines | 7 | 7 | Complete |
+| 1. Contracts, Schemas & Baselines | 7 | 7 | Complete (review passed) |
 | 2. Provider Plugin & Passthrough Gateway | 4 | 0 | Not started |
 | 3. Candidate Inventory & Model Cards | 3 | 0 | Not started |
 | 4. Deterministic Routing MVP | 5 | 0 | Not started |

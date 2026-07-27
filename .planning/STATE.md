@@ -1,14 +1,28 @@
 # Project State
 
 ## Current Position
-- **Phase**: 1 of 11 (executed, pending review)
-- **Status**: Phase 1 complete — all 7 plans executed successfully, phase-close gate green
-- **Last Activity**: Phase 1 execution (2026-07-27)
+- **Phase**: 1 of 11 (complete)
+- **Status**: Phase 1 complete — review passed (3 cycles)
+- **Last Activity**: Phase 1 review passed (2026-07-27)
 
 ## Progress
 ```
 [###·················] 14% — 7/47 plans complete
 ```
+
+## Phase 1 Review
+Passed after 3 cycles with a 4-reviewer dynamic panel. **6 blockers and 29 warnings found and
+resolved**; none left unresolved. Tests 70 → 206.
+
+The governing finding: three cycles of security review converged on *overclaiming*, not
+under-constraining. `additionalProperties: false` plus value constraints bound the **shape** of
+what can be written, not the **intent** — a 40-character GitHub token is indistinguishable from a
+legitimate identifier, and 17 of 26 smuggling payloads survived the first tightening. Every
+absolute "cannot carry X" claim was replaced with a precise statement of what is bounded plus
+explicit scoping to the Phase 8 write path, and a test now walks all schema descriptions against
+11 banned phrasings. Ten vectors remain open by design, asserted as open in a green test.
+
+Full record: `.planning/phases/01-contracts-schemas-baselines/01-REVIEW.md`
 
 ## Phase 1 Results
 All 7 plans Complete. 196 verification commands run across the phase, 195 passed. The single
@@ -49,6 +63,10 @@ Phase-close gate (all green):
 - **Phase 11**: wheel-content check should become a standing CI job. `package-data` globs fail silently while every in-repo `PYTHONPATH=src` gate stays green.
 - **Phase 11**: fill the `SECURITY.md` security contact (currently `TODO`).
 - CI matrix tests Python 3.11/3.12; Hermes supports through 3.13. Adding a `3.13` cell would close the gap.
+- **Phase 2**: salting has no Phase 1 structural backstop. `telemetry/events.py` must apply a per-install salt before the digest is written, and the test that pins it (same session id under two salts → two digests) lands with that code. `docs/privacy.md` now says so explicitly.
+- **Phase 2 plan authoring**: do not copy plan 01-06's `git diff --quiet` guard idiom — it cannot detect an untracked forbidden file. Use `git status --porcelain -- <path> | grep -q . && exit 1 || exit 0`.
+- **Phase 2**: candidate ids now permit `/` (segmented pattern), so `../../etc/passwd` matches. Any consumer using a candidate id as a path component must sanitize it; the model-card description says so.
+- **Before going public**: sweep `.planning/` for absolute paths containing the developer's OS username.
 
 ## Resolved by Phase 1
 - ~~Mirror Hermes's `requires-python` upper bound?~~ — **No.** Plan 01-05's analysis: capping this project at `<3.14` would make it uninstallable on 3.14 for every user, including the majority who never enable the optional bridge, inverting design.md §10.2's "should remain optional". Use an optional extra in Phase 7 (`hermes-bridge = ["hermes-agent>=0.19,<1.0"]`) so pip enforces Hermes's ceiling transitively at the right scope. Upper bounds are baked into published metadata and cannot be relaxed retroactively.
@@ -58,4 +76,4 @@ Phase-close gate (all green):
 - ~~Pin the `design.md` revision~~ — blob `18bb54b36485fa0813ec67f84a74628a9eee3aae` at commit `331a69d`, recorded in `01-CONTEXT.md` with a verification command
 
 ## Next Action
-Run `/legion:review` to verify Phase 1: Contracts, Schemas & Baselines
+Run `/legion:plan 2` to plan Phase 2: Provider Plugin & Passthrough Gateway
