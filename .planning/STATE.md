@@ -1,13 +1,13 @@
 # Project State
 
 ## Current Position
-- **Phase**: 2 of 11 (executing — wave 3 of 5 complete)
-- **Status**: Phase 2 wave 3 complete — 6/9 plans, 693 tests passing (was 206)
-- **Last Activity**: Phase 2 wave 3 execution (2026-07-27)
+- **Phase**: 2 of 11 (executing — wave 4 of 5 complete)
+- **Status**: Phase 2 wave 4 complete — 7/9 plans, 761 tests passing (was 206)
+- **Last Activity**: Phase 2 wave 4 execution (2026-07-27)
 
 ## Progress
 ```
-[#####···············] 25% — 13/52 plans complete
+[######··············] 27% — 14/52 plans complete
 ```
 
 ## Phase 1 Review
@@ -120,7 +120,7 @@ replaced with a stronger check.
 - ~~Pin the `design.md` revision~~ — blob `18bb54b36485fa0813ec67f84a74628a9eee3aae` at commit `331a69d`, recorded in `01-CONTEXT.md` with a verification command
 
 ## Next Action
-Wave 4 of Phase 2 in progress (plan 02-07 supervisor, CLI, control plugin)
+Wave 5 of Phase 2 in progress (plans 02-08 differential harness, 02-09 live smoke)
 
 ## Open Items — raised by Phase 2 Wave 1
 - ~~**Wave 2 blocker**: starlette 1.3.1 vs the 0.3x API the plan assumed~~ — **RESOLVED.** Two real deltas found by reading the installed source: `Starlette.__init__` takes only `lifespan` (no `on_startup`/`on_shutdown`), and `uvicorn 0.51`'s `capture_signals()` nests, so `main.py` subclasses `Server` for the admin listener.
@@ -156,13 +156,12 @@ Wave 4 of Phase 2 in progress (plan 02-07 supervisor, CLI, control plugin)
 - `tests/performance/test_validation_cost.py` takes ~11 s, marked `performance` but not `slow`.
 
 ## Open Items — raised by Phase 2 Wave 3
-- **AUTHORIZED TO 02-07 (security)**: `gateway/ingress.py:195` fails open.
+- ~~**AUTHORIZED TO 02-07 (security)**: `gateway/ingress.py:195` fails open~~ — **FIXED** in 02-07, tests shown red (7 failed) before green (9 passed), with a structural guard against an "early return" refactor reintroducing the timing oracle. Original finding:
   `compare_token(supplied, expected_token or "")` returns `True` when the app has no token and the
   caller sends no header, since `compare_digest(b"", b"")` is `True`. The comment directly above states
   the intent the code violates. Not reachable in production (`app.py`'s lifespan always mints) but
   `create_app()` without a lifespan authenticates unauthenticated requests.
-- **02-07**: nothing mints the admin token outside the gateway's own lifespan. `setup`/`doctor` should
-  mint and permission-check it so `stop` works against a gateway started before 02-06 landed.
+- ~~**02-07**: nothing mints the admin token outside the gateway's own lifespan~~ — **DONE.** `doctor` now mints it when absent. It deliberately never re-mints the *inference* token, since `app.py`'s lifespan reads that once at startup and rotating it would lock out a running gateway.
 - **Phase 11**: `starlette.testclient` warns its `httpx` backend is deprecated (`install httpx2`).
   Harmless now; `pyproject.toml` pins lower bounds only, so it will bite at the next Starlette bump.
 - **Phase 11**: `_running_uvicorn_servers()` depends on `uvicorn.Server.serve` remaining the outermost
@@ -170,3 +169,16 @@ Wave 4 of Phase 2 in progress (plan 02-07 supervisor, CLI, control plugin)
   `servers_signalled: 0`, which the response body at least reports honestly.
 - **Phase 11**: `docs/threat-model.md` lines 170-177 record an admin-scope residual risk that plan
   02-06 discharges. That file was forbidden in Phase 2; update it when it is next writable.
+
+## Open Items — raised by Phase 2 Wave 4
+- **02-09 (live smoke)**: this machine's local security product **drops the SYN** on a connect to a
+  never-used loopback port, so the connect times out rather than being refused. Any code treating
+  "connection refused" as a liveness signal is unreachable here. 02-07 solved it by deciding staleness
+  with `bind()` instead; the smoke matrix must not reintroduce the assumption.
+- **02-08 / 02-09**: `HERMES_AUTO_STATE_DIR` outranks config, so **no in-process test can use a second
+  state dir**. 02-07's first foreign-gateway test silently wrote into the first install's directory.
+- **Phase 6**: a bare TCP listener on the recorded port reports `unresponsive`, not `foreign`, because
+  `/healthz` times out rather than answering. Only an HTTP responder yields `foreign` — the two states
+  are less distinguishable than the supervision contract implies.
+- **Phases 3/4/8/11**: `design.md` §4.2's six other `/auto` commands are deliberately unregistered; the
+  phases that deliver them are named in `admin.py`'s 501 bodies. `hermes auto explain --last` likewise.

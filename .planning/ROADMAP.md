@@ -182,7 +182,7 @@
 | Phase | Plans | Completed | Status |
 |-------|-------|-----------|--------|
 | 1. Contracts, Schemas & Baselines | 7 | 7 | Complete (review passed) |
-| 2. Provider Plugin & Passthrough Gateway | 9 | 6 | In progress (wave 3 of 5) |
+| 2. Provider Plugin & Passthrough Gateway | 9 | 7 | In progress (wave 4 of 5) |
 | 3. Candidate Inventory & Model Cards | 3 | 0 | Not started |
 | 4. Deterministic Routing MVP | 5 | 0 | Not started |
 | 5. Cache-Aware Session Routing | 4 | 0 | Not started |
@@ -192,4 +192,4 @@
 | 9. Learned Capability Predictor | 4 | 0 | Not started |
 | 10. Outcome Residual & Constrained Adaptation | 4 | 0 | Not started |
 | 11. Production Hardening & Release | 4 | 0 | Not started |
-| **Total** | **52** | **13** | **Phase 1 complete; Phase 2 wave 3 of 5 done** |
+| **Total** | **52** | **14** | **Phase 1 complete; Phase 2 wave 4 of 5 done** |
