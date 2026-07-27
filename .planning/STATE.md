@@ -1,13 +1,13 @@
 # Project State
 
 ## Current Position
-- **Phase**: 2 of 11 (executing — wave 1 of 5 complete)
-- **Status**: Phase 2 wave 1 complete — 3/9 plans, 483 tests passing (was 206)
-- **Last Activity**: Phase 2 wave 1 execution (2026-07-27)
+- **Phase**: 2 of 11 (executing — wave 2 of 5 complete)
+- **Status**: Phase 2 wave 2 complete — 5/9 plans, 622 tests passing (was 206)
+- **Last Activity**: Phase 2 wave 2 execution (2026-07-27)
 
 ## Progress
 ```
-[####················] 19% — 10/52 plans complete
+[#####···············] 23% — 12/52 plans complete
 ```
 
 ## Phase 1 Review
@@ -81,7 +81,8 @@ non-vacuous: fails on a touched routing schema, passes when restored, ignores a 
 
 **Highest-value find**: the repo has `core.autocrlf=true` and had no `.gitattributes`. Git was proved
 to rewrite `
-` → `
+` → `
+
 ` on checkout of a `.txt` file, so every SSE frame terminator would have
 differed between commit and checkout — invisible locally, breaking 02-04/02-08/02-09 in CI. Plan
 02-03 shipped an unplanned `tests/fixtures/sse/.gitattributes` and proved the fix by deleting all 12
@@ -106,7 +107,7 @@ replaced with a stronger check.
 - **Phase 2 plan authoring**: do not copy plan 01-06's `git diff --quiet` guard idiom — it cannot detect an untracked forbidden file. Use `git status --porcelain -- <path> | grep -q . && exit 1 || exit 0`.
 - **Phase 2**: candidate ids now permit `/` (segmented pattern), so `../../etc/passwd` matches. Any consumer using a candidate id as a path component must sanitize it; the model-card description says so.
 - **Phase 3**: run `/legion:map` before planning — Phase 1 delivered 36 Python files and Phase 2 adds a full HTTP service, past the point a plan author can hold it all
-- **Phase 3**: flip `gateway.strict_validation` default if plan 02-08 measures hoisted request validation under 2 ms; no Phase 2 plan may edit that default
+- ~~**Phase 3**: flip `gateway.strict_validation` if hoisted validation measures under 2 ms~~ — **RESOLVED, keep it off.** Plan 02-04 measured 29.06 ms mean / 31.79 ms p95 on a 155 KB body: 14x the flip condition, and a third of the entire 100 ms TTFT budget. Hoisting works (69.10 -> 29.06 ms) but does not rescue it. The metadata envelope at 41 us is hot-path-safe.
 - **Phase 3**: candidate ids permit `/`, so sanitize before using one as a path component — deferred from Phase 1 as N/A there
 - **Phase 2 known gaps** (recorded, not fixed): `hermes auto models|benchmark|explain|export-diagnostics` are deferred to Phases 3, 8, 4, 11; "no CORS" is asserted nowhere; `docs/privacy.md` still says salting is "Left to Phase 8" though plan 02-02 delivers it
 - **Before going public**: sweep `.planning/` for absolute paths containing the developer's OS username.
@@ -119,12 +120,10 @@ replaced with a stronger check.
 - ~~Pin the `design.md` revision~~ — blob `18bb54b36485fa0813ec67f84a74628a9eee3aae` at commit `331a69d`, recorded in `01-CONTEXT.md` with a verification command
 
 ## Next Action
-Wave 2 of Phase 2 in progress (plans 02-04 gateway core, 02-05 provider plugin + shim)
+Wave 3 of Phase 2 in progress (plan 02-06 admin API)
 
 ## Open Items — raised by Phase 2 Wave 1
-- **Wave 2 blocker check**: `starlette>=0.37` resolved to **1.3.1**, a major version past what the
-  floor implies. Plan 02-04's gateway text was written against the 0.3x ASGI / `StreamingResponse`
-  API. 02-04 must verify against 1.x before building, not after.
+- ~~**Wave 2 blocker**: starlette 1.3.1 vs the 0.3x API the plan assumed~~ — **RESOLVED.** Two real deltas found by reading the installed source: `Starlette.__init__` takes only `lifespan` (no `on_startup`/`on_shutdown`), and `uvicorn 0.51`'s `capture_signals()` nests, so `main.py` subclasses `Server` for the admin listener.
 - **02-08**: `error.code` is typed `["string","null"]`, but some OpenAI-compatible relays emit an
   integer `code` (HTTP status). Under `gateway.strict_validation: true` that body fails validation on
   a relay schema whose stated purpose is never to reject forwardable traffic — same class as the
@@ -140,3 +139,18 @@ Wave 2 of Phase 2 in progress (plans 02-04 gateway core, 02-05 provider plugin +
   directory, and 02-02's mints a real salt beside it. Intended (they prove platform behavior) but
   they are real artifacts, not fixtures.
 - **02-CONTEXT.md** says `.planning/CODEBASE.md` "does not exist." It does, and it is accurate.
+
+## Open Items — raised by Phase 2 Wave 2
+- **02-07 (`doctor`)**: compare the installed shim's `PLUGIN_VERSION` against
+  `hermes_auto.version.__version__` to detect a stale on-disk shim. The installed file carries the
+  version that wrote it; nothing else detects drift after an upgrade.
+- **`gateway.max_body_bytes` has no config key.** It is a `create_app` parameter, because
+  `GatewayConfig` freezes its key set and `config.py` was forbidden to 02-04. Whoever next owns
+  `config.py` should add it to `_GATEWAY_KEYS`; until then the 32 MiB default is programmatic only.
+- **`_RelayResponse` is a workaround for upstream Starlette behaviour** (`StreamingResponse` never
+  closes its `body_iterator`). If a future Starlette closes it, this becomes redundant — harmless,
+  since closing is idempotent, but revisit at the next dependency bump.
+- **`plugin.yaml` is not required for model-provider discovery** — `_import_plugin_dir` returns early
+  only when `__init__.py` is missing and never reads the manifest, though every bundled plugin ships
+  one. Not written. A future `hermes plugins list` surface may want it.
+- `tests/performance/test_validation_cost.py` takes ~11 s, marked `performance` but not `slow`.
