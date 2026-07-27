@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-auto-router.dev/schema/routing/outcome-event.v1.json",
+  "title": "Telemetry outcome event (v1)",
+  "description": "One record in the local-first outcome store (design.md §13.1-§13.3, ADR-0004). This schema is where the privacy posture becomes STRUCTURAL rather than advisory. Four prohibitions are hard defaults that hold with zero configuration: (1) store no raw prompt text; (2) store no tool-result bodies; (3) store no secrets; (4) hash root session identifiers with a local salt, so cross-machine correlation is impossible by design rather than merely disabled. Enforcement is by construction: the property set below is a closed allowlist of identifiers, numeric measurements, and small categorical enums, and `additionalProperties` is false at every object level in this schema. There is therefore no property — under any name or spelling — that can carry request content, response content, tool arguments, tool-result bodies, error bodies, or credential values, and a future field cannot smuggle content in without a schema version bump and the review that implies. `error_class` is a short classification such as `rate_limit` or `auth_failure`, never a captured error body. External export remains opt-in and may emit only a subset of these fields (design.md §13.5).",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "root_session_hash", "lane_id"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque unique identifier for this event."
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "request_completed",
+        "request_failed",
+        "turn_completed",
+        "tool_error",
+        "user_feedback",
+        "health_observation",
+        "fallback_used"
+      ],
+      "description": "Event family (design.md §13.1-§13.3). Determines which of the optional measurement fields are meaningful; the schema does not require any of them, because collection is best-effort and a provider may not report every measurement."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp at which the event occurred."
+    },
+    "root_session_hash": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Root session identifier hashed with a LOCAL salt (ADR-0004, design.md §13.1). Never the raw Hermes session id. Because the salt is local, the same conversation on two machines hashes differently and fleet-level correlation is unavailable by design."
+    },
+    "lane_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque lane identifier within the root session (design.md §6.2). An opaque handle, not a derived or reversible value."
+    },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^dec_",
+      "description": "The RouteDecision this outcome is attributed to, joining the event to its explainability record."
+    },
+    "candidate": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The `id` of the model card whose candidate produced this outcome."
+    },
+    "ttft_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Time to first token in milliseconds (design.md §13.2)."
+    },
+    "total_latency_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total request latency in milliseconds (design.md §13.2)."
+    },
+    "input_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Actual uncached input token count as normalized by Hermes (design.md §13.2). A count only — the tokens themselves are never stored."
+    },
+    "output_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Actual output token count (design.md §13.2). A count only."
+    },
+    "cached_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Actual cache-read token count (design.md §13.2). A count only."
+    },
+    "reasoning_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Actual reasoning token count (design.md §13.2). A count only; hidden model reasoning is never captured or reconstructed (design.md §12)."
+    },
+    "actual_cost_usd": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Actual turn cost in USD (design.md §13.2). Null means the cost is unknown — for example an unpriced local candidate — and unknown is never reconciled as zero (design.md §7.5)."
+    },
+    "tool_call_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of tool calls in the turn (design.md §13.2). A count only; tool names, arguments, and results are not stored."
+    },
+    "invalid_tool_call_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of malformed or rejected tool calls (design.md §13.2). A count only."
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of retries performed (design.md §13.2)."
+    },
+    "empty_response": {
+      "type": "boolean",
+      "description": "Whether the candidate returned an empty response (design.md §13.2). A flag only, never the response body."
+    },
+    "context_compressed": {
+      "type": "boolean",
+      "description": "Whether context compression ran for this request (design.md §13.2)."
+    },
+    "user_interrupted": {
+      "type": "boolean",
+      "description": "Whether the user interrupted the turn (design.md §13.2)."
+    },
+    "turn_succeeded": {
+      "type": "boolean",
+      "description": "Whether the turn completed successfully (design.md §13.3)."
+    },
+    "feedback": {
+      "type": "string",
+      "enum": ["good", "bad"],
+      "description": "Explicit positive or negative user feedback (design.md §13.3). A two-valued enum, deliberately not free text, so a user comment can never become a content-retention channel."
+    },
+    "error_class": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Short machine-readable failure classification such as `rate_limit`, `auth_failure`, `context_overflow`, `timeout`, or `upstream_5xx`. This is a CLASSIFICATION assigned by the router, never a captured error body, provider message, stack trace, or response payload. `maxLength` is a deliberate second barrier against a future implementation pasting a message body into this field."
+    }
+  }
+}

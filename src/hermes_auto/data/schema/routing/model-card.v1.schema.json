@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-auto-router.dev/schema/routing/model-card.v1.json",
+  "title": "Candidate model card (v1)",
+  "description": "A declarative, versioned description of one routing candidate (design.md §9.2, ADR-0003). A candidate is an execution identity, not a model ID: the same base model reached through two providers is two separate cards with two separate `id` values, because it may differ in latency, pricing, cache behavior, tool-call reliability, limits, and safety filtering (design.md §9.1). This schema describes the *curated model card* layer only. The six-level precedence chain (hard operator policy > live health > measured candidate statistics > curated model card > registry metadata > conservative unknown defaults) is a merge-time contract implemented in Phase 3, not a schema constraint (design.md §9.3, ADR-0003). Cards are untrusted input and must be schema-validated on load. A card never contains a credential value — only an environment-variable reference.",
+  "type": "object",
+  "required": ["id", "enabled", "transport", "capabilities", "limits"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable candidate identifier. This is the value that appears in RouteDecision `ranked[].candidate`, `excluded[].candidate`, and `selected`, and in outcome-event `candidate`."
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Whether this candidate participates in routing at all. A disabled card is loaded and validated but never scored."
+    },
+    "transport": {
+      "type": "object",
+      "description": "How the candidate is reached. Only `adapter`, `provider`, and `model` are required. ADR-0003's seven-element candidate identity (provider, endpoint, model, credential scope, protocol adapter, harness profile, harness version) is the *runtime composition* of identity performed in Phase 3 from this card plus resolved configuration — it is deliberately not the set of required card fields, because endpoint and credential scope are frequently supplied by operator configuration rather than restated per card.",
+      "required": ["adapter", "provider", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Protocol adapter that speaks to this endpoint, e.g. `openai_compatible`, `openrouter`, `litellm` (design.md §10.1, §10.2)."
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider identity. Part of candidate identity: the same `model` through two providers is two candidates."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider-side model identifier sent upstream."
+        },
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Endpoint base URL when it is not implied by the adapter, e.g. a local Ollama, vLLM, or LM Studio server."
+        },
+        "credential_ref": {
+          "type": "string",
+          "pattern": "^(env:[A-Z0-9_]+|none)$",
+          "description": "Reference to the credential, never the credential itself. Only an environment-variable reference (`env:NAME`) or the literal `none` for an unauthenticated local endpoint validates. This pattern is the structural guarantee that a raw API key can never be written into a card and pass validation."
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "The eight capability dimensions from design.md §7.2, each normalized to [0, 1]. All eight are required on a card — unlike the RouteDecision requirement vector, which may be sparse. A card must be complete because a missing dimension would be read as an unconstrained surplus and silently inflate the candidate's fit.",
+      "required": [
+        "reasoning",
+        "code_generation",
+        "debugging",
+        "tool_orchestration",
+        "long_horizon_execution",
+        "context_synthesis",
+        "structured_precision",
+        "multimodal_reasoning"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "reasoning": { "type": "number", "minimum": 0, "maximum": 1 },
+        "code_generation": { "type": "number", "minimum": 0, "maximum": 1 },
+        "debugging": { "type": "number", "minimum": 0, "maximum": 1 },
+        "tool_orchestration": { "type": "number", "minimum": 0, "maximum": 1 },
+        "long_horizon_execution": { "type": "number", "minimum": 0, "maximum": 1 },
+        "context_synthesis": { "type": "number", "minimum": 0, "maximum": 1 },
+        "structured_precision": { "type": "number", "minimum": 0, "maximum": 1 },
+        "multimodal_reasoning": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "affinities": {
+      "type": "object",
+      "description": "Per-domain affinity scores over the ten domain tags from design.md §7.2, each normalized to [0, 1]. Domain tags are kept separate from capability scores rather than collapsed into them. Every tag is optional — an absent tag means no measured affinity — but unknown tag names fail validation, so a misspelled domain fails loudly instead of silently scoring zero.",
+      "additionalProperties": false,
+      "properties": {
+        "frontend_ui": { "type": "number", "minimum": 0, "maximum": 1 },
+        "backend_application": { "type": "number", "minimum": 0, "maximum": 1 },
+        "systems_infrastructure": { "type": "number", "minimum": 0, "maximum": 1 },
+        "database_sql": { "type": "number", "minimum": 0, "maximum": 1 },
+        "security": { "type": "number", "minimum": 0, "maximum": 1 },
+        "research": { "type": "number", "minimum": 0, "maximum": 1 },
+        "writing": { "type": "number", "minimum": 0, "maximum": 1 },
+        "mathematics": { "type": "number", "minimum": 0, "maximum": 1 },
+        "data_analysis": { "type": "number", "minimum": 0, "maximum": 1 },
+        "local_machine_operations": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "description": "Hard capability limits used by the eligibility filter (design.md §7.3, §9.2). A text-only candidate — `vision: false` with `capabilities.multimodal_reasoning: 0.0` — is a normal, valid card.",
+      "required": [
+        "context_tokens",
+        "max_output_tokens",
+        "tools",
+        "vision",
+        "structured_output"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "context_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum total context window in tokens."
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum output tokens per response."
+        },
+        "tools": {
+          "type": "boolean",
+          "description": "Whether the candidate supports tool calling."
+        },
+        "vision": {
+          "type": "boolean",
+          "description": "Whether the candidate accepts image input."
+        },
+        "structured_output": {
+          "type": "boolean",
+          "description": "Whether the candidate supports schema-constrained structured output."
+        }
+      }
+    },
+    "economics": {
+      "type": "object",
+      "description": "Per-million-token pricing in USD. Every price is nullable, and null is semantically distinct from 0: null means the price is UNKNOWN, and unknown pricing is NEVER treated as zero cost (design.md §7.5, ADR-0003). Zero-cost defaults would make the cheapest candidate always be the one we know least about, inverting the intended behavior. An unknown-priced candidate is excluded from `economy` mode by default and permitted in `quality` only when the user explicitly allows unknown-cost models. These fields deliberately carry no `default`, so a missing price stays an explicit unknown handled by mode policy rather than being filled in by the validator.",
+      "additionalProperties": false,
+      "properties": {
+        "input_per_million": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "USD per million uncached input tokens. Null means unknown, never zero."
+        },
+        "output_per_million": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "USD per million output tokens. Null means unknown, never zero."
+        },
+        "cache_read_per_million": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "USD per million cache-read tokens. Null means unknown, never zero."
+        },
+        "cache_write_per_million": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "USD per million cache-write tokens. Null means unknown, never zero."
+        },
+        "request_fee": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Provider-specific fixed per-request fee in USD (`F_request` in design.md §7.5). Null means unknown, never zero."
+        }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "description": "The model-specific harness profile applied when executing this candidate (design.md §10.3). Harness version is part of candidate identity per ADR-0003, so changing the harness invalidates measurements taken under the old one; `version` is therefore required whenever this block is present, and is a monotonically incrementing integer rather than a free-form string so that ordering is total and machine-checkable.",
+      "required": ["version"],
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Named harness profile, e.g. `openai-coding-v1`."
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Harness profile version. Part of candidate identity — it must increment when the harness changes."
+        },
+        "reasoning_policy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reasoning-effort policy applied to this candidate, e.g. `adaptive`."
+        },
+        "cache_strategy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Prompt-cache strategy, e.g. `provider_session_key`."
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "description": "Operator policy classifications for this candidate (design.md §7.2, §7.3, §9.2). Hard operator policy sits at the top of the precedence chain, so nothing below it — including any learned component — can restore a candidate that policy excluded.",
+      "additionalProperties": false,
+      "properties": {
+        "privacy_class": {
+          "type": "string",
+          "enum": ["cloud", "approved", "local"],
+          "description": "Privacy class, matched against the request's `privacy_requirement` (cloud_allowed / approved_only / local_only) in design.md §7.2."
+        },
+        "experimental": {
+          "type": "boolean",
+          "description": "Whether the candidate is experimental and therefore held out of default routing."
+        },
+        "allowed_modes": {
+          "type": "array",
+          "description": "Routing modes in which this candidate may be selected. Absent means all modes.",
+          "items": {
+            "type": "string",
+            "enum": ["quality", "balanced", "economy", "session"]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "description": "Provenance for the scores on this card (design.md §9.2, ADR-0003). `source_version` is what a RouteDecision records in `model_card_version` so a decision can be replayed against the exact card snapshot that produced it, and a regression attributed to a specific card revision.",
+      "additionalProperties": false,
+      "properties": {
+        "source_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Version identifier of this card revision."
+        },
+        "calibration_dataset": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the dataset the capability and affinity scores were calibrated against."
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of calibration samples behind these scores. 0 means the scores are unmeasured judgments."
+        }
+      }
+    },
+    "context_anchor": {
+      "type": "boolean",
+      "default": false,
+      "description": "Marks this candidate as a context-anchor candidate that must support the advertised virtual context window (design.md §9.4). Setup and doctor commands require at least one enabled context-anchor candidate."
+    }
+  }
+}

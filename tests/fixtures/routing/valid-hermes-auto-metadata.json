@@ -1,0 +1,7 @@
+{
+  "protocol_version": 1,
+  "root_session_id": "test-session-0000-synthetic",
+  "virtual_model": "auto:balanced",
+  "plugin_version": "0.1.0",
+  "auxiliary_task": null
+}
