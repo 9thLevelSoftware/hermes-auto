@@ -1,13 +1,13 @@
 # Project State
 
 ## Current Position
-- **Phase**: 2 of 11 (executing — wave 2 of 5 complete)
-- **Status**: Phase 2 wave 2 complete — 5/9 plans, 622 tests passing (was 206)
-- **Last Activity**: Phase 2 wave 2 execution (2026-07-27)
+- **Phase**: 2 of 11 (executing — wave 3 of 5 complete)
+- **Status**: Phase 2 wave 3 complete — 6/9 plans, 693 tests passing (was 206)
+- **Last Activity**: Phase 2 wave 3 execution (2026-07-27)
 
 ## Progress
 ```
-[#####···············] 23% — 12/52 plans complete
+[#####···············] 25% — 13/52 plans complete
 ```
 
 ## Phase 1 Review
@@ -109,7 +109,7 @@ replaced with a stronger check.
 - **Phase 3**: run `/legion:map` before planning — Phase 1 delivered 36 Python files and Phase 2 adds a full HTTP service, past the point a plan author can hold it all
 - ~~**Phase 3**: flip `gateway.strict_validation` if hoisted validation measures under 2 ms~~ — **RESOLVED, keep it off.** Plan 02-04 measured 29.06 ms mean / 31.79 ms p95 on a 155 KB body: 14x the flip condition, and a third of the entire 100 ms TTFT budget. Hoisting works (69.10 -> 29.06 ms) but does not rescue it. The metadata envelope at 41 us is hot-path-safe.
 - **Phase 3**: candidate ids permit `/`, so sanitize before using one as a path component — deferred from Phase 1 as N/A there
-- **Phase 2 known gaps** (recorded, not fixed): `hermes auto models|benchmark|explain|export-diagnostics` are deferred to Phases 3, 8, 4, 11; "no CORS" is asserted nowhere; `docs/privacy.md` still says salting is "Left to Phase 8" though plan 02-02 delivers it
+- **Phase 2 known gaps** (recorded, not fixed): `hermes auto models|benchmark|explain|export-diagnostics` are deferred to Phases 3, 8, 4, 11; ~~"no CORS" is asserted nowhere~~ — **asserted by plan 02-06**, with a control test proving the negative tests can fail; `docs/privacy.md` still says salting is "Left to Phase 8" though plan 02-02 delivers it
 - **Before going public**: sweep `.planning/` for absolute paths containing the developer's OS username.
 
 ## Resolved by Phase 1
@@ -120,7 +120,7 @@ replaced with a stronger check.
 - ~~Pin the `design.md` revision~~ — blob `18bb54b36485fa0813ec67f84a74628a9eee3aae` at commit `331a69d`, recorded in `01-CONTEXT.md` with a verification command
 
 ## Next Action
-Wave 3 of Phase 2 in progress (plan 02-06 admin API)
+Wave 4 of Phase 2 in progress (plan 02-07 supervisor, CLI, control plugin)
 
 ## Open Items — raised by Phase 2 Wave 1
 - ~~**Wave 2 blocker**: starlette 1.3.1 vs the 0.3x API the plan assumed~~ — **RESOLVED.** Two real deltas found by reading the installed source: `Starlette.__init__` takes only `lifespan` (no `on_startup`/`on_shutdown`), and `uvicorn 0.51`'s `capture_signals()` nests, so `main.py` subclasses `Server` for the admin listener.
@@ -154,3 +154,19 @@ Wave 3 of Phase 2 in progress (plan 02-06 admin API)
   only when `__init__.py` is missing and never reads the manifest, though every bundled plugin ships
   one. Not written. A future `hermes plugins list` surface may want it.
 - `tests/performance/test_validation_cost.py` takes ~11 s, marked `performance` but not `slow`.
+
+## Open Items — raised by Phase 2 Wave 3
+- **AUTHORIZED TO 02-07 (security)**: `gateway/ingress.py:195` fails open.
+  `compare_token(supplied, expected_token or "")` returns `True` when the app has no token and the
+  caller sends no header, since `compare_digest(b"", b"")` is `True`. The comment directly above states
+  the intent the code violates. Not reachable in production (`app.py`'s lifespan always mints) but
+  `create_app()` without a lifespan authenticates unauthenticated requests.
+- **02-07**: nothing mints the admin token outside the gateway's own lifespan. `setup`/`doctor` should
+  mint and permission-check it so `stop` works against a gateway started before 02-06 landed.
+- **Phase 11**: `starlette.testclient` warns its `httpx` backend is deprecated (`install httpx2`).
+  Harmless now; `pyproject.toml` pins lower bounds only, so it will bite at the next Starlette bump.
+- **Phase 11**: `_running_uvicorn_servers()` depends on `uvicorn.Server.serve` remaining the outermost
+  coroutine of its task — the one place a uvicorn upgrade could silently degrade shutdown to
+  `servers_signalled: 0`, which the response body at least reports honestly.
+- **Phase 11**: `docs/threat-model.md` lines 170-177 record an admin-scope residual risk that plan
+  02-06 discharges. That file was forbidden in Phase 2; update it when it is next writable.
