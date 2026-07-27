@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-auto-router.dev/schema/wire/openai-error.v1.json",
+  "title": "OpenAI Error Envelope (hermes-auto-router wire subset, v1)",
+  "description": "The error body an OpenAI-compatible provider returns on a non-2xx response to POST /v1/chat/completions, and the body the gateway relays back unchanged. This is a different shape from chat.completion: it carries no id, object, created, model, or choices, so openai-chat-response.v1 does not describe it and error bodies were previously unvalidated. design.md 20.3 lists context-length errors in the contract-test set; 401 invalid-api-key and 429 rate-limit bodies use the same envelope. This is a RELAY schema: additionalProperties is true at both levels because providers add fields the gateway must forward verbatim, and a closed object here would reject traffic the gateway is required to pass through. The typed properties below bound the SHAPE of the fields this schema names; they do not constrain what a provider chooses to put in them, and they say nothing about fields a provider adds that are not named here.",
+  "type": "object",
+  "required": ["error"],
+  "additionalProperties": true,
+  "properties": {
+    "error": { "$ref": "#/$defs/errorDetail" }
+  },
+  "$defs": {
+    "errorDetail": {
+      "type": "object",
+      "description": "The error detail object. message and type are the two fields every OpenAI-compatible provider observed so far sets on every error response, so they are required; param and code are frequently absent or explicitly null and are therefore optional and nullable.",
+      "required": ["message", "type"],
+      "additionalProperties": true,
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Human-readable description of what went wrong, as written by the provider. Free text of provider-chosen length. The gateway relays it; it does not parse, truncate, or interpret it, and nothing here bounds what a provider includes in it."
+        },
+        "type": {
+          "type": "string",
+          "description": "Provider error category, such as invalid_request_error, authentication_error, or rate_limit_error. Deliberately not an enum: the value set is provider-defined and grows, and an enum here would reject an error the gateway must still relay."
+        },
+        "param": {
+          "type": ["string", "null"],
+          "description": "The request parameter the error refers to, such as 'messages' or 'max_tokens'. Null when the error is not attributable to one parameter."
+        },
+        "code": {
+          "type": ["string", "null"],
+          "description": "Machine-readable error code, such as context_length_exceeded or invalid_api_key. Null when the provider does not supply one."
+        }
+      }
+    }
+  }
+}

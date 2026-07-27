@@ -58,6 +58,7 @@ EXPECTED_SCHEMA_IDS: frozenset[str] = frozenset(
         "https://hermes-auto-router.dev/schema/routing/route-decision.v1.json",
         "https://hermes-auto-router.dev/schema/wire/openai-chat-request.v1.json",
         "https://hermes-auto-router.dev/schema/wire/openai-chat-response.v1.json",
+        "https://hermes-auto-router.dev/schema/wire/openai-error.v1.json",
         "https://hermes-auto-router.dev/schema/wire/sse-stream-contract.v1.json",
     }
 )

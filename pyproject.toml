@@ -17,6 +17,15 @@ dependencies = [
     # relying on that leaves a direct import undeclared.
     "referencing>=0.30",
     "pyyaml>=6.0",
+    # Phase 2 gateway stack. Recorded in
+    # .planning/phases/02-provider-plugin-passthrough-gateway/02-CONTEXT.md
+    # § Architecture Decision. fastapi, pydantic, psutil and structlog were
+    # each considered and explicitly refused there: FastAPI's value is Pydantic
+    # request modeling, which silently drops any field it does not model and so
+    # defeats the opaque-dict passthrough that makes R5 structurally true.
+    "starlette>=0.37",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +33,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "hypothesis>=6.98",
+    "pytest-httpx>=0.30",
 ]
 
 [tool.setuptools.dynamic]
@@ -42,7 +52,19 @@ hermes_auto = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# pytest-asyncio resolved to 1.4.0, which no longer has a usable default mode:
+# without this setting an async test does not fail, it fails to *collect*.
+# Set here in Wave 1 because every async test from plan 02-04 onward depends on
+# it and no later plan owns this file.
+asyncio_mode = "auto"
 markers = [
     "contract: protocol contract tests",
     "performance: latency and throughput tests",
+    # Registered here in Wave 1: plans 02-07, 02-08 and 02-09 each need one of
+    # these, and none of them may edit pyproject.toml, so a marker declared
+    # late is a marker that cannot be declared at all.
+    "supervisor: process supervision and lifecycle tests",
+    "differential: gateway-versus-direct behavioral equivalence tests",
+    "e2e: end-to-end tests against a live Hermes installation",
+    "slow: tests that are too slow for the default inner loop",
 ]

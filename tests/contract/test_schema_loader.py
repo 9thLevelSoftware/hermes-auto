@@ -322,7 +322,7 @@ def test_packaged_schema_set_matches_expected_ids():
     deliberate edit to ``EXPECTED_SCHEMA_IDS``.
     """
     assert set(load_schemas()) == set(EXPECTED_SCHEMA_IDS)
-    assert len(EXPECTED_SCHEMA_IDS) == 7
+    assert len(EXPECTED_SCHEMA_IDS) == 8
 
     # Every declared id is genuinely loadable, so the constant cannot drift into
     # naming a schema that does not exist.
