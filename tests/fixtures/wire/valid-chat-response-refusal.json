@@ -1,0 +1,30 @@
+{
+  "id": "chatcmpl-fixture-0002",
+  "object": "chat.completion",
+  "created": 1700000001,
+  "model": "test-model-a",
+  "system_fingerprint": "fp_fixture_0002",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": "Synthetic fixture refusal text. The model declined to answer."
+      },
+      "finish_reason": "content_filter",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 41,
+    "completion_tokens": 12,
+    "total_tokens": 53,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  }
+}

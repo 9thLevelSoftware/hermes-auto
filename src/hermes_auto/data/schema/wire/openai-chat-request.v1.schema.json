@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-auto-router.dev/schema/wire/openai-chat-request.v1.json",
+  "title": "OpenAI Chat Completions Request (hermes-auto-router wire subset, v1)",
+  "description": "The subset of the OpenAI Chat Completions request body that the local routing gateway accepts at POST /v1/chat/completions (design.md 5.3). The gateway must stay OpenAI Chat Completions compatible because Hermes's normal chat transport already sends OpenAI-formatted messages and tools. Unknown top-level keys are permitted (additionalProperties: true) because providers add fields and the gateway must forward requests it can still relay rather than rejecting them; every key this schema does define is strictly typed. Fields deliberately left untyped-but-accepted include n, presence_penalty, frequency_penalty, logit_bias, logprobs, top_logprobs, parallel_tool_calls, service_tier, store, metadata, reasoning_effort, modalities, audio, prediction, and the deprecated functions/function_call pair.",
+  "type": "object",
+  "required": ["model", "messages"],
+  "additionalProperties": true,
+  "properties": {
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Requested model. For this gateway this is normally a virtual alias such as auto:balanced (design.md 5.1)."
+    },
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Conversation so far, in OpenAI message order.",
+      "items": { "$ref": "#/$defs/message" }
+    },
+    "tools": {
+      "type": "array",
+      "description": "Tool definitions available to the model for this turn.",
+      "items": { "$ref": "#/$defs/toolDefinition" }
+    },
+    "tool_choice": { "$ref": "#/$defs/toolChoice" },
+    "stream": {
+      "type": "boolean",
+      "description": "Whether the response is delivered as an SSE stream. Not required; both true and false are valid. When true the response is a sequence of chunks matching sse-stream-contract.v1."
+    },
+    "stream_options": {
+      "type": "object",
+      "description": "Streaming modifiers. include_usage requests a final chunk carrying token usage (design.md 20.3, 'usage in final stream chunks').",
+      "additionalProperties": true,
+      "properties": {
+        "include_usage": { "type": "boolean" }
+      }
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Legacy output-token cap."
+    },
+    "max_completion_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Current output-token cap; supersedes max_tokens on newer models."
+    },
+    "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+    "top_p": { "type": "number", "minimum": 0, "maximum": 1 },
+    "stop": {
+      "description": "One stop sequence or a list of them.",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    },
+    "response_format": { "$ref": "#/$defs/responseFormat" },
+    "seed": { "type": "integer" },
+    "user": { "type": "string" },
+    "_hermes_auto": {
+      "$ref": "https://hermes-auto-router.dev/schema/routing/hermes-auto-metadata.v1.json",
+      "description": "Routing metadata injected by the Hermes provider plugin via build_extra_body(). Referenced by $id rather than restated, so there is exactly one source of truth for its shape and the envelope's own rules — protocol_version must be 1, unknown keys are a version mismatch — are actually enforced here. Typing it as a bare object instead accepted {\"protocol_version\": 99, \"junk\": \"x\"}. Resolving this $ref requires the validator to carry a registry covering the routing schemas; hermes_auto.gateway.schemas.validate() builds one from the loaded mapping. Permitted but never required. Per design.md 5.1 the gateway strips this key before forwarding the request upstream."
+    }
+  },
+  "$defs": {
+    "message": {
+      "type": "object",
+      "description": "One chat message. Tool results use role=tool and must carry the tool_call_id they answer; only assistant messages may carry tool_calls.",
+      "required": ["role"],
+      "additionalProperties": true,
+      "properties": {
+        "role": {
+          "enum": ["system", "developer", "user", "assistant", "tool"]
+        },
+        "content": { "$ref": "#/$defs/messageContent" },
+        "name": { "type": "string" },
+        "tool_calls": {
+          "type": "array",
+          "description": "Tool calls emitted by the assistant. More than one entry represents parallel tool calls (design.md 20.3).",
+          "items": { "$ref": "#/$defs/toolCall" }
+        },
+        "tool_call_id": {
+          "type": "string",
+          "description": "Identifier of the assistant tool call this message answers. Required on role=tool messages."
+        },
+        "refusal": { "type": ["string", "null"] }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "role": { "const": "tool" } },
+            "required": ["role"]
+          },
+          "then": { "required": ["tool_call_id"] }
+        },
+        {
+          "if": {
+            "properties": { "role": { "const": "assistant" } },
+            "required": ["role"]
+          },
+          "else": { "not": { "required": ["tool_calls"] } }
+        }
+      ]
+    },
+    "messageContent": {
+      "description": "Message body: a plain string, null (assistant messages that only emit tool calls), or an ordered array of multipart content parts.",
+      "anyOf": [
+        { "type": "string" },
+        { "type": "null" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/contentPart" }
+        }
+      ]
+    },
+    "contentPart": {
+      "type": "object",
+      "description": "One part of a multipart message body, dispatched on `type`. Image parts are what make the vision cases in design.md 20.3 expressible. This def is deliberately OPEN rather than a closed oneOf: a closed form was the only closed object in a relay schema whose message objects one level up are additionalProperties: true, and it rejected requests the upstream provider accepts — `cache_control` on a text part, `mime_type` on an image part, and the `input_audio` and `file` part types, the first of which is the only way the `audio` modality this schema claims to accept can actually arrive. Unknown part types relay untyped; the two types the gateway itself reasons about stay strictly typed via the conditionals below.",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Part discriminator, e.g. `text`, `image_url`, `input_audio`, or `file`. Required and a string so a part is always dispatchable, but not enumerated, so a part type added by a provider is relayed rather than rejected."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "text" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["text"],
+            "properties": { "text": { "type": "string" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "image_url" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["image_url"],
+            "properties": {
+              "image_url": {
+                "type": "object",
+                "required": ["url"],
+                "additionalProperties": true,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "An https URL or a data: URI carrying the image bytes."
+                  },
+                  "detail": { "enum": ["auto", "low", "high"] }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "toolCall": {
+      "type": "object",
+      "description": "One assistant tool call. Note that function.arguments is a JSON-encoded string, not an object; that is precisely why streamed arguments arrive fragmented and must be concatenated before parsing (design.md 20.3).",
+      "required": ["id", "type", "function"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "const": "function" },
+        "function": {
+          "type": "object",
+          "required": ["name", "arguments"],
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "arguments": {
+              "type": "string",
+              "description": "JSON-encoded argument object, carried as a string."
+            }
+          }
+        }
+      }
+    },
+    "toolDefinition": {
+      "type": "object",
+      "required": ["type", "function"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "const": "function" },
+        "function": {
+          "type": "object",
+          "required": ["name"],
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "description": { "type": "string" },
+            "parameters": {
+              "type": "object",
+              "description": "JSON Schema describing the tool's arguments."
+            },
+            "strict": { "type": ["boolean", "null"] }
+          }
+        }
+      }
+    },
+    "toolChoice": {
+      "description": "How the model should use tools: a mode keyword, or an object naming one function.",
+      "oneOf": [
+        { "enum": ["none", "auto", "required"] },
+        {
+          "type": "object",
+          "required": ["type", "function"],
+          "additionalProperties": true,
+          "properties": {
+            "type": { "const": "function" },
+            "function": {
+              "type": "object",
+              "required": ["name"],
+              "additionalProperties": true,
+              "properties": {
+                "name": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "responseFormat": {
+      "type": "object",
+      "description": "Structured-output request (design.md 20.3, 'structured outputs'). A `json_schema` type without its `json_schema` payload is not a relayable request — the upstream provider has nothing to constrain generation with — so the payload is conditionally required rather than merely permitted.",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "enum": ["text", "json_object", "json_schema"] },
+        "json_schema": {
+          "type": "object",
+          "required": ["name", "schema"],
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "schema": {
+              "type": "object",
+              "description": "The JSON Schema the completion must conform to."
+            },
+            "strict": { "type": ["boolean", "null"] },
+            "description": { "type": "string" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "json_schema" } },
+            "required": ["type"]
+          },
+          "then": { "required": ["json_schema"] }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "id": "chatcmpl-fixture-0001",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "test-model-a",
+  "system_fingerprint": "fp_fixture_0001",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Synthetic fixture completion text.",
+        "refusal": null
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 34,
+    "total_tokens": 154,
+    "prompt_tokens_details": {
+      "cached_tokens": 96
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 18
+    }
+  }
+}

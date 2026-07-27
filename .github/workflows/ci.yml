@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: this workflow only reads the repository. It publishes no
+# packages, pushes no commits, and writes no checks.
+permissions:
+  contents: read
+
+# Superseded pushes to the same ref are cancelled rather than queued behind a
+# result nobody will read.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # A Windows-only failure must not hide a macOS-only failure. Every cell
+      # runs to completion so one nightly gives the full picture.
+      fail-fast: false
+      matrix:
+        # Exactly the three platforms the sidecar must supervise.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          # This repository declares its dependencies only in pyproject.toml.
+          # Naming it explicitly keeps the cache key deterministic instead of
+          # relying on the action's requirements.txt-first fallback order.
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the package and its dev extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run the test suite
+        run: python -m pytest tests/ -q
+
+  schema-validation:
+    name: Schema payload validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the package and its dev extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Phase-close gate. It asserts the completed Phase 1 state -- all seven
+      # versioned schemas discoverable through the glob-based loader -- and is
+      # expected to fail on any commit made before every schema plan has landed.
+      # That is intended. There is deliberately no continue-on-error and no
+      # tolerance clause: an empty or short result is a failure, because a
+      # silently empty loader is precisely the packaging bug this job exists to
+      # catch.
+      - name: Assert every schema is discoverable
+        run: |
+          python -c "from hermes_auto.gateway.schemas import load_schemas, EXPECTED_SCHEMA_IDS as E; s = set(load_schemas()); assert s == set(E), sorted(s ^ set(E))"
+
+  package:
+    name: Wheel packaging
+    runs-on: ubuntu-latest
+    # The schema-validation job above installs the project as EDITABLE, so its
+    # SCHEMA_ROOT resolves into the source tree and it proves nothing about what
+    # actually ships. `package-data` globs are a common silent packaging failure:
+    # drop the "data/schema/**/*.json" line from pyproject.toml and every
+    # in-repo gate stays green while the wheel carries zero schemas and
+    # load_schemas() returns {} for every installed copy. This job is the only
+    # one that inspects and then exercises the built artifact.
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # Built into the runner temp directory rather than the workspace so the
+      # artifact cannot be confused with a checked-out file or picked up by a
+      # later step's glob.
+      - name: Build the wheel
+        env:
+          WHEEL_DIR: ${{ runner.temp }}/dist-check
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip wheel --no-deps -w "$WHEEL_DIR" .
+
+      # Exactly seven, not "at least seven": a >= comparison cannot detect a
+      # stray eighth schema or a duplicate landing at the tree root.
+      - name: Assert the wheel carries the full schema payload
+        env:
+          WHEEL_DIR: ${{ runner.temp }}/dist-check
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+          import sys
+          import zipfile
+
+          # Single source of truth: the same frozenset the runtime asserts against,
+          # read from the source tree so this step needs no install of its own.
+          sys.path.insert(0, "src")
+          from hermes_auto.gateway.schemas import EXPECTED_SCHEMA_IDS
+
+          wheel_dir = os.environ["WHEEL_DIR"]
+          wheels = sorted(glob.glob(os.path.join(wheel_dir, "*.whl")))
+          assert len(wheels) == 1, wheels
+
+          names = zipfile.ZipFile(wheels[0]).namelist()
+          schemas = sorted(n for n in names if n.endswith(".schema.json"))
+          print("\n".join(schemas))
+          assert len(schemas) == len(EXPECTED_SCHEMA_IDS), (schemas, sorted(EXPECTED_SCHEMA_IDS))
+          assert "hermes_auto/py.typed" in names, sorted(names)
+          PY
+
+      # The step that matters. Everything else in this workflow imports from a
+      # source tree; this imports from the installed artifact a user would get.
+      - name: Install the wheel into a clean virtualenv and load the schemas
+        env:
+          WHEEL_DIR: ${{ runner.temp }}/dist-check
+          VENV_DIR: ${{ runner.temp }}/wheel-venv
+        run: |
+          python -m venv "$VENV_DIR"
+          # bin on the runner; the Scripts fallback lets a maintainer run this
+          # exact snippet on the Windows platform the sidecar also supervises.
+          if [ -x "$VENV_DIR/bin/python" ]; then
+            VENV_PY="$VENV_DIR/bin/python"
+          else
+            VENV_PY="$VENV_DIR/Scripts/python.exe"
+          fi
+          # No -e, no PYTHONPATH, and cwd is not the repository root, so an
+          # importable hermes_auto can only come from the installed wheel.
+          "$VENV_PY" -m pip install --upgrade pip
+          "$VENV_PY" -m pip install "$WHEEL_DIR"/*.whl
+          cd "$VENV_DIR"
+          "$VENV_PY" -c "from hermes_auto.gateway.schemas import load_schemas, EXPECTED_SCHEMA_IDS as E; s = set(load_schemas()); assert s == set(E), sorted(s ^ set(E)); print(len(s), 'schemas loaded from the installed wheel')"

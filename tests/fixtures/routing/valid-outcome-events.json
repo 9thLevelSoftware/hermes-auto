@@ -1,0 +1,81 @@
+[
+  {
+    "event_id": "evt_test_0000000001",
+    "event_type": "request_completed",
+    "occurred_at": "2026-07-26T10:00:00Z",
+    "root_session_hash": "03b276acf8d3c14651148e5f1ab6707c9844bd33694a476c3c8748dc0481737e",
+    "lane_id": "lane_test_main",
+    "decision_id": "dec_test0000000001",
+    "candidate": "test-coding-specialist",
+    "ttft_ms": 612,
+    "total_latency_ms": 4821,
+    "input_tokens": 18432,
+    "output_tokens": 1204,
+    "cached_tokens": 16000,
+    "reasoning_tokens": 0,
+    "actual_cost_usd": 0.0683,
+    "tool_call_count": 3,
+    "invalid_tool_call_count": 0,
+    "retry_count": 0,
+    "empty_response": false,
+    "context_compressed": false,
+    "user_interrupted": false
+  },
+  {
+    "event_id": "evt_test_0000000002",
+    "event_type": "request_failed",
+    "occurred_at": "2026-07-26T10:01:15Z",
+    "root_session_hash": "03b276acf8d3c14651148e5f1ab6707c9844bd33694a476c3c8748dc0481737e",
+    "lane_id": "lane_test_main",
+    "decision_id": "dec_test0000000002",
+    "candidate": "test-hosted-general",
+    "total_latency_ms": 1180,
+    "retry_count": 2,
+    "error_class": "rate_limit"
+  },
+  {
+    "event_id": "evt_test_0000000003",
+    "event_type": "turn_completed",
+    "occurred_at": "2026-07-26T10:02:40Z",
+    "root_session_hash": "03b276acf8d3c14651148e5f1ab6707c9844bd33694a476c3c8748dc0481737e",
+    "lane_id": "lane_test_main",
+    "decision_id": "dec_test0000000001",
+    "candidate": "test-coding-specialist",
+    "turn_succeeded": true,
+    "tool_call_count": 3,
+    "invalid_tool_call_count": 0,
+    "context_compressed": true,
+    "user_interrupted": false
+  },
+  {
+    "event_id": "evt_test_0000000004",
+    "event_type": "user_feedback",
+    "occurred_at": "2026-07-26T10:03:02Z",
+    "root_session_hash": "03b276acf8d3c14651148e5f1ab6707c9844bd33694a476c3c8748dc0481737e",
+    "lane_id": "lane_test_main",
+    "decision_id": "dec_test0000000001",
+    "candidate": "test-coding-specialist",
+    "feedback": "good"
+  },
+  {
+    "event_id": "evt_test_0000000005",
+    "event_type": "fallback_used",
+    "occurred_at": "2026-07-26T10:01:16Z",
+    "root_session_hash": "03b276acf8d3c14651148e5f1ab6707c9844bd33694a476c3c8748dc0481737e",
+    "lane_id": "lane_test_main",
+    "decision_id": "dec_test0000000002",
+    "candidate": "test-local-fast",
+    "error_class": "upstream_5xx",
+    "actual_cost_usd": null
+  },
+  {
+    "event_id": "evt_test_0000000006",
+    "event_type": "tool_error",
+    "occurred_at": "2026-07-26T10:02:05Z",
+    "root_session_hash": "03b276acf8d3c14651148e5f1ab6707c9844bd33694a476c3c8748dc0481737e",
+    "lane_id": "lane_test_main",
+    "candidate": "test-coding-specialist",
+    "invalid_tool_call_count": 1,
+    "error_class": "tool_schema_violation"
+  }
+]

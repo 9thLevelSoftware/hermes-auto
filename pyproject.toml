@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-auto-router"
+description = "Capability-, cost-, cache-, and outcome-aware model routing for Hermes Agent"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dynamic = ["version"]
+dependencies = [
+    "packaging>=23.0",
+    "jsonschema>=4.20",
+    # Imported directly by hermes_auto.gateway.schemas (Registry, Resource,
+    # exceptions.Unresolvable). A jsonschema transitive dependency today, but
+    # relying on that leaves a direct import undeclared.
+    "referencing>=0.30",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "hypothesis>=6.98",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "hermes_auto.version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hermes_auto = [
+    "py.typed",
+    "data/schema/**/*.json",
+    "data/*.yaml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "contract: protocol contract tests",
+    "performance: latency and throughput tests",
+]

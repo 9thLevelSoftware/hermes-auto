@@ -1,0 +1,8 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Synthetic fixture prompt with no model key; must fail validation."
+    }
+  ]
+}

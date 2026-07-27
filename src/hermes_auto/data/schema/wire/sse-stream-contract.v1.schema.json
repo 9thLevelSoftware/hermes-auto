@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-auto-router.dev/schema/wire/sse-stream-contract.v1.json",
+  "title": "OpenAI Chat Completions Stream Chunk (hermes-auto-router wire subset, v1)",
+  "description": "One SSE chunk emitted by the local routing gateway when a request set stream: true. This schema describes the JSON payload of a single `data:` event; the literal `data: [DONE]` sentinel that terminates the stream is not JSON and is therefore not validated by this schema. Two invariants from design.md 8.2 apply to any consumer of these chunks. First, an EMPTY `delta` object is valid and must never be treated as an error; providers emit keep-alive and role-only frames routinely. Second, the FIRST-CHUNK COMMIT BARRIER: the gateway may transparently fail over to another model only until the first valid SSE event has been forwarded to Hermes. Once a chunk has been forwarded the route is committed and no second model may continue the same output stream, because doing so produces duplicate text, corrupt tool-call JSON, conflicting tool identifiers, inconsistent reasoning, and untraceable billing.",
+  "type": "object",
+  "required": ["id", "object", "created", "model", "choices"],
+  "additionalProperties": true,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "object": { "const": "chat.completion.chunk" },
+    "created": {
+      "type": "integer",
+      "description": "Unix timestamp in seconds."
+    },
+    "model": { "type": "string", "minLength": 1 },
+    "choices": {
+      "type": "array",
+      "description": "Zero or more choice deltas. A final usage-only chunk may carry an empty array.",
+      "items": { "$ref": "#/$defs/choiceDelta" }
+    },
+    "system_fingerprint": { "type": ["string", "null"] },
+    "service_tier": { "type": ["string", "null"] },
+    "usage": {
+      "$ref": "#/$defs/usage",
+      "description": "Present only on the final chunk, and only when the request set stream_options.include_usage (design.md 20.3, 'usage in final stream chunks')."
+    }
+  },
+  "$defs": {
+    "choiceDelta": {
+      "type": "object",
+      "required": ["index", "delta"],
+      "additionalProperties": true,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "delta": { "$ref": "#/$defs/delta" },
+        "finish_reason": {
+          "description": "Null on every chunk but the last for this choice.",
+          "enum": ["stop", "length", "tool_calls", "content_filter", null]
+        },
+        "logprobs": { "type": ["object", "null"] }
+      }
+    },
+    "delta": {
+      "type": "object",
+      "description": "The incremental payload. Declares no required properties on purpose: an empty delta ({}) is valid per design.md 8.2 and must not be treated as an error.",
+      "additionalProperties": true,
+      "properties": {
+        "role": { "enum": ["assistant"] },
+        "content": { "type": ["string", "null"] },
+        "refusal": { "type": ["string", "null"] },
+        "tool_calls": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/toolCallDelta" }
+        }
+      }
+    },
+    "toolCallDelta": {
+      "type": "object",
+      "description": "A fragment of one tool call. `index` is the assembly key: fragments sharing an index belong to the same call, and their function.arguments fragments form valid JSON only after concatenation in arrival order. id, type, name, and arguments each appear only in the fragments that carry them.",
+      "required": ["index"],
+      "additionalProperties": true,
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Position of this tool call within the choice's tool_calls array; the key used to reassemble fragmented arguments."
+        },
+        "id": { "type": "string" },
+        "type": { "const": "function" },
+        "function": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string" },
+            "arguments": {
+              "type": "string",
+              "description": "A partial fragment of the JSON-encoded argument string. Individually it is usually not parseable JSON."
+            }
+          }
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "description": "Same shape as openai-chat-response.v1's usage block, repeated here so a chunk validates standalone.",
+      "additionalProperties": true,
+      "properties": {
+        "prompt_tokens": { "type": "integer", "minimum": 0 },
+        "completion_tokens": { "type": "integer", "minimum": 0 },
+        "total_tokens": { "type": "integer", "minimum": 0 },
+        "prompt_tokens_details": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "cached_tokens": { "type": "integer", "minimum": 0 },
+            "audio_tokens": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "completion_tokens_details": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "reasoning_tokens": { "type": "integer", "minimum": 0 },
+            "audio_tokens": { "type": "integer", "minimum": 0 },
+            "accepted_prediction_tokens": { "type": "integer", "minimum": 0 },
+            "rejected_prediction_tokens": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-auto-router.dev/schema/routing/outcome-event.v1.json",
+  "title": "Telemetry outcome event (v1)",
+  "description": "One record in the local-first outcome store (design.md §13.1-§13.3, ADR-0004). Four prohibitions are the design's privacy defaults: (1) store no raw prompt text; (2) store no tool-result bodies; (3) store no secrets; (4) hash root session identifiers with a local salt so cross-machine correlation is unavailable rather than merely disabled. THIS SCHEMA IS ONE OF TWO MECHANISMS BEHIND THOSE DEFAULTS, AND IT IS THE WEAKER ONE. What it does establish, in two layers: layer one, the property set is a closed allowlist with `additionalProperties: false` at every object level, so no field named `prompt`, `messages`, or `api_key` can exist without a schema version bump; layer two, every string property is length-capped and character-class-constrained and every numeric property has a finite range, so an event has a bounded maximum serialized size — every declared property simultaneously at its ceiling is 1,114 bytes of JSON, asserted by a contract test — and no field accepts arbitrary bytes. Specifically: `root_session_hash` is 64 lowercase hex characters; `event_id` is at most 64 of `[A-Za-z0-9_-]`; `lane_id` and `candidate` are at most 128 of their identifier classes; `decision_id` is `dec_` plus at most 64 identifier characters, anchored at both ends; `error_class` is at most 64 of `[a-z0-9_]`; `feedback` is a two-valued enum; `occurred_at` is a range-checked timestamp. WHAT THIS SCHEMA DOES NOT ESTABLISH: bounding a field's shape does not bound a writer's intent. A 128-character identifier holds a 40-character GitHub token, which is alphanumeric and matches; `error_class` holds 64 characters of lowercase prose; a 9-digit fractional second is 9 digits of anything. No set of value constraints closes this, because every field that must carry a real value must accept the bytes a real value is made of. The claim that outcome events contain no request content, no response content, no tool arguments, no tool-result bodies, and no credentials is therefore a WRITE-PATH INVARIANT owned by the Phase 8 telemetry writer — the code that decides what goes in each field — and it must be reviewed and tested there. This schema constrains what such a writer *can* emit and makes an accidental widening visible in review; it does not by itself make the claim true. Phase 1 ships no telemetry writer, so no path reaches this schema today. External export remains opt-in and may emit only a subset of these fields (design.md §13.5).",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "root_session_hash", "lane_id"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Opaque unique identifier for this event. Bounded length and an identifier-only character class keep it a handle: it holds no whitespace, no punctuation beyond `_` and `-`, and no more than 64 characters. It is not a proof of non-content — 64 alphanumerics is a UUID, and it is also an API token — only a tight bound on how much of anything fits."
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "request_completed",
+        "request_failed",
+        "turn_completed",
+        "tool_error",
+        "user_feedback",
+        "health_observation",
+        "fallback_used"
+      ],
+      "description": "Event family (design.md §13.1-§13.3). Determines which of the optional measurement fields are meaningful; the schema does not require any of them, because collection is best-effort and a provider may not report every measurement."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])[Tt]([01]\\d|2[0-3]):[0-5]\\d:([0-5]\\d|60)(\\.\\d{1,9})?([Zz]|[+-]([01]\\d|2[0-3]):[0-5]\\d)$",
+      "description": "Timestamp at which the event occurred, in RFC 3339 form. The `pattern` is what enforces it: `format` is annotation-only under JSON Schema 2020-12 and is inert unless a validator is explicitly configured with a format checker, so it is kept as documentation and never relied on. The pattern is COMPONENT-RANGE-CHECKED, not calendar-validated. It enforces month 01-12, day 01-31, hour 00-23, minute and second 00-59 (second 60 permitted for leap seconds), and offset hours 00-23 — so `2026-13-45T99:99:99Z` no longer validates — and it accepts the lowercase `t` and `z` separators RFC 3339 permits, which the previous uppercase-only pattern wrongly rejected. It does NOT check the day against the month or the year: `2026-02-31` and `2027-02-29` validate. Fractional seconds are capped at 9 digits, nanosecond resolution being the finest any real clock offers; the previous unbounded `\\d+` made this the one field in the schema that accepted an arbitrarily long run of digits, which is an arbitrarily large payload in decimal. A consumer needing true calendar validity must parse the value, which is the only thing that can establish it."
+    },
+    "root_session_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Root session identifier hashed with a LOCAL salt (ADR-0004, design.md §13.1), not the raw Hermes session id. The pattern admits only a 64-character lowercase hex digest, so this field rejects a raw session id, a prompt, and any value containing a character outside `[0-9a-f]`. This is the tightest constraint in the schema and close to the limit of what a value constraint can do: the field's whole legitimate content is a fixed-width digest, so nothing is given up by admitting only that. It still does not distinguish a correctly salted digest from any other 64 hex characters — that the value is `sha256(local_salt + session_id)` is a property of the code that computes it. Because the salt is local, the same conversation on two machines hashes differently and fleet-level correlation is unavailable."
+    },
+    "lane_id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Opaque lane identifier within the root session (design.md §6.2). An opaque handle, not a derived or reversible value. Bounded length and an identifier-only character class keep it a handle rather than a text field. Same class and cap as the RouteDecision `lane_id`, so the two cannot drift apart."
+    },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^dec_[A-Za-z0-9_-]{1,64}$",
+      "description": "The RouteDecision this outcome is attributed to, joining the event to its explainability record. Anchored at BOTH ends and length-capped; a prefix-only `^dec_` would have accepted `dec_` followed by an arbitrary payload. Byte-identical to the RouteDecision `decision_id` pattern — the two name the same value and a divergence would make a decision unjoinable to its own outcomes."
+    },
+    "candidate": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)*$",
+      "description": "The `id` of the model card whose candidate produced this outcome. `maxLength` and `pattern` are byte-identical to model-card.v1 `/properties/id`, asserted by a contract test, so every id a card can declare is an id an outcome event can attribute to."
+    },
+    "ttft_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400000,
+      "description": "Time to first token in milliseconds (design.md §13.2). Capped at 24 hours in milliseconds. JSON integers are arbitrary-precision, so an uncapped count is an unbounded field."
+    },
+    "total_latency_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400000,
+      "description": "Total request latency in milliseconds (design.md §13.2). Capped at 24 hours in milliseconds. JSON integers are arbitrary-precision, so an uncapped count is an unbounded field."
+    },
+    "input_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000,
+      "description": "Actual uncached input token count as normalized by Hermes (design.md §13.2). A count only — the tokens themselves are never stored. Capped at 1e8, far above any provider context window. JSON integers are arbitrary-precision, so an uncapped count is an unbounded field."
+    },
+    "output_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000,
+      "description": "Actual output token count (design.md §13.2). A count only. Capped at 1e8. JSON integers are arbitrary-precision, so an uncapped count is an unbounded field."
+    },
+    "cached_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000,
+      "description": "Actual cache-read token count (design.md §13.2). A count only. Capped at 1e8. JSON integers are arbitrary-precision, so an uncapped count is an unbounded field."
+    },
+    "reasoning_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000,
+      "description": "Actual reasoning token count (design.md §13.2). A count only; hidden model reasoning is never captured or reconstructed (design.md §12). Capped at 1e8. JSON integers are arbitrary-precision, so an uncapped count is an unbounded field."
+    },
+    "actual_cost_usd": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Actual turn cost in USD (design.md §13.2). Null means the cost is unknown — for example an unpriced local candidate — and unknown is never reconciled as zero (design.md §7.5)."
+    },
+    "tool_call_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000,
+      "description": "Number of tool calls in the turn (design.md §13.2). A count only; tool names, arguments, and results are not stored. Capped at 1e5; a turn making more is a runaway loop, not a measurement. JSON integers are arbitrary-precision, so an uncapped count is an unbounded field."
+    },
+    "invalid_tool_call_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000,
+      "description": "Number of malformed or rejected tool calls (design.md §13.2). A count only. Capped at 1e5. JSON integers are arbitrary-precision, so an uncapped count is an unbounded field."
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000,
+      "description": "Number of retries performed (design.md §13.2). Capped at 1e4. JSON integers are arbitrary-precision, so an uncapped count is an unbounded field."
+    },
+    "empty_response": {
+      "type": "boolean",
+      "description": "Whether the candidate returned an empty response (design.md §13.2). A flag only, never the response body."
+    },
+    "context_compressed": {
+      "type": "boolean",
+      "description": "Whether context compression ran for this request (design.md §13.2)."
+    },
+    "user_interrupted": {
+      "type": "boolean",
+      "description": "Whether the user interrupted the turn (design.md §13.2)."
+    },
+    "turn_succeeded": {
+      "type": "boolean",
+      "description": "Whether the turn completed successfully (design.md §13.3)."
+    },
+    "feedback": {
+      "type": "string",
+      "enum": ["good", "bad"],
+      "description": "Explicit positive or negative user feedback (design.md §13.3). A two-valued enum, deliberately not free text, so a user comment can never become a content-retention channel."
+    },
+    "error_class": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9_]+$",
+      "description": "Short machine-readable failure classification such as `rate_limit`, `auth_failure`, `context_overflow`, `timeout`, or `upstream_5xx`. This is a CLASSIFICATION assigned by the router, not a captured error body, provider message, stack trace, or response payload. The pattern enforces the snake_case shape the examples imply, which the 64-character cap alone did not: before it, this field accepted 64 characters of anything — prose with spaces and punctuation, an `sk-` prefixed key, an embedded NUL, a right-to-left override. It now rejects every character outside `[a-z0-9_]`, which excludes all of those. It does not exclude 64 characters of lowercase English words joined by underscores, so it bounds the field's form rather than proving its meaning; that the value is drawn from a fixed classification vocabulary is a property of the Phase 8 writer."
+    }
+  }
+}
