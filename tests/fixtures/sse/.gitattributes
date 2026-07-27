@@ -1,0 +1,2 @@
+# Fixture bytes are the artifact under test. Git must never translate them.
+*.txt -text -diff

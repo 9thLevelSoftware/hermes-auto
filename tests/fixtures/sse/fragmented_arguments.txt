@@ -1,0 +1,20 @@
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_test0004","type":"function","function":{"name":"run_task","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"pa"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\": \"/tm"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"p/synthetic.txt\", \"argu"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ments\": [\"--dry"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"-run\"], \"mo"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"de\": \"read\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0004","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
