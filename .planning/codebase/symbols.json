@@ -1,0 +1,1225 @@
+{
+  "generated_at": "2026-07-27",
+  "by_file": {
+    "scripts/benchmark.py": [
+      {
+        "name": "build_parser",
+        "kind": "function",
+        "line": 105,
+        "doc": "Return the CLI parser."
+      },
+      {
+        "name": "validate_events",
+        "kind": "function",
+        "line": 156,
+        "doc": "Validate every ``entry[\"event\"]`` against ``outcome-event.v1``."
+      },
+      {
+        "name": "main",
+        "kind": "function",
+        "line": 231,
+        "doc": "Render the report."
+      }
+    ],
+    "src/hermes_auto/compatibility.py": [
+      {
+        "name": "CompatibilityStatus",
+        "kind": "class",
+        "line": 61,
+        "doc": "Outcome of a compatibility probe."
+      },
+      {
+        "name": "CompatibilityResult",
+        "kind": "class",
+        "line": 75,
+        "doc": "The probe's verdict, plus enough context to explain it to an operator."
+      },
+      {
+        "name": "detect_hermes_version",
+        "kind": "function",
+        "line": 94,
+        "doc": "Return the installed Hermes distribution version, or None if absent."
+      },
+      {
+        "name": "check_compatibility",
+        "kind": "function",
+        "line": 108,
+        "doc": "Probe whether ``version`` (or the installed Hermes) is supported."
+      },
+      {
+        "name": "is_usable",
+        "kind": "function",
+        "line": 84,
+        "doc": "True only for ``COMPATIBLE``."
+      }
+    ],
+    "src/hermes_auto/evaluation/baselines.py": [
+      {
+        "name": "BaselineReport",
+        "kind": "class",
+        "line": 71,
+        "doc": "A full baseline comparison over one corpus."
+      },
+      {
+        "name": "check_run_shapes",
+        "kind": "function",
+        "line": 92,
+        "doc": "Raise :class:`CorpusError` unless every run has the recorded-run shape."
+      },
+      {
+        "name": "build_report",
+        "kind": "function",
+        "line": 137,
+        "doc": "Group *runs* by strategy and aggregate each group against *corpus*."
+      },
+      {
+        "name": "render_json",
+        "kind": "function",
+        "line": 214,
+        "doc": "Render *report* as deterministic JSON."
+      },
+      {
+        "name": "render_markdown",
+        "kind": "function",
+        "line": 258,
+        "doc": "Render *report* as a deterministic Markdown document."
+      }
+    ],
+    "src/hermes_auto/evaluation/corpus.py": [
+      {
+        "name": "CorpusError",
+        "kind": "class",
+        "line": 69,
+        "doc": "A corpus file, or a recorded run referring to one, is not usable."
+      },
+      {
+        "name": "BaselineTask",
+        "kind": "class",
+        "line": 80,
+        "doc": "One unit of work in the baseline corpus."
+      },
+      {
+        "name": "require_mapping",
+        "kind": "function",
+        "line": 101,
+        "doc": "Return *value* as a mapping, or raise :class:`CorpusError` naming its type."
+      },
+      {
+        "name": "load_corpus",
+        "kind": "function",
+        "line": 114,
+        "doc": "Parse *path* and return its tasks sorted by ``task_id``."
+      }
+    ],
+    "src/hermes_auto/evaluation/metrics.py": [
+      {
+        "name": "MetricSummary",
+        "kind": "class",
+        "line": 81,
+        "doc": "Aggregated baseline metrics for one group of recorded runs."
+      },
+      {
+        "name": "aggregate",
+        "kind": "function",
+        "line": 304,
+        "doc": "Reduce *runs* to a single :class:`MetricSummary`."
+      }
+    ],
+    "src/hermes_auto/gateway/schemas.py": [
+      {
+        "name": "SchemaLoadError",
+        "kind": "class",
+        "line": 69,
+        "doc": "A schema mapping could not be assembled or is not self-contained."
+      },
+      {
+        "name": "load_schemas",
+        "kind": "function",
+        "line": 80,
+        "doc": "Return every schema under *root*, keyed by its ``$id``."
+      },
+      {
+        "name": "build_registry",
+        "kind": "function",
+        "line": 143,
+        "doc": "Return a ``referencing`` registry covering every schema in *schemas*."
+      },
+      {
+        "name": "build_validator",
+        "kind": "function",
+        "line": 187,
+        "doc": "Return a reusable validator for *schema_id* with the registry attached."
+      },
+      {
+        "name": "validate",
+        "kind": "function",
+        "line": 251,
+        "doc": "Validate *instance* against the schema registered under *schema_id*."
+      }
+    ],
+    "tests/conftest.py": [
+      {
+        "name": "repo_root",
+        "kind": "function",
+        "line": 9,
+        "doc": "Absolute path to the repository root."
+      }
+    ],
+    "tests/contract/test_routing_schemas.py": [
+      {
+        "name": "routing_schemas",
+        "kind": "function",
+        "line": 75,
+        "doc": "The four routing schemas, keyed by ``$id``."
+      },
+      {
+        "name": "fixture_dir",
+        "kind": "function",
+        "line": 91,
+        "doc": "Directory holding this plan's synthetic routing fixtures."
+      },
+      {
+        "name": "test_metadata_fixture_validates",
+        "kind": "function",
+        "line": 107,
+        "doc": ""
+      },
+      {
+        "name": "test_route_decision_fixture_validates",
+        "kind": "function",
+        "line": 112,
+        "doc": ""
+      },
+      {
+        "name": "test_model_card_fixture_validates",
+        "kind": "function",
+        "line": 117,
+        "doc": ""
+      },
+      {
+        "name": "test_model_card_unknown_pricing_validates",
+        "kind": "function",
+        "line": 122,
+        "doc": "A local candidate with every price null is a legal card."
+      },
+      {
+        "name": "test_all_outcome_events_validate",
+        "kind": "function",
+        "line": 136,
+        "doc": ""
+      },
+      {
+        "name": "test_route_decision_selected_need_not_be_top_ranked",
+        "kind": "function",
+        "line": 151,
+        "doc": "A health veto selects a lower-ranked candidate; that must validate."
+      },
+      {
+        "name": "test_route_decision_allows_empty_ranked",
+        "kind": "function",
+        "line": 167,
+        "doc": "Every candidate hard-excluded is a representable structured failure."
+      },
+      {
+        "name": "test_reason_code_enum_has_twelve_codes",
+        "kind": "function",
+        "line": 194,
+        "doc": "The design.md §12 reason-code vocabulary is frozen at twelve."
+      },
+      {
+        "name": "test_all_eight_capabilities_required_on_card",
+        "kind": "function",
+        "line": 204,
+        "doc": "A card must score every dimension; a missing one is not a surplus."
+      },
+      {
+        "name": "test_transport_requires_exactly_three_fields",
+        "kind": "function",
+        "line": 218,
+        "doc": "``transport.required`` is exactly adapter, provider, model."
+      },
+      {
+        "name": "test_outcome_event_defines_no_content_carrying_property",
+        "kind": "function",
+        "line": 232,
+        "doc": "The allowlist contains no property that could hold content, at any depth."
+      },
+      {
+        "name": "test_every_routing_schema_declares_id_and_dialect",
+        "kind": "function",
+        "line": 266,
+        "doc": "All four schemas are self-describing and use draft 2020-12."
+      },
+      {
+        "name": "test_capability_above_one_fails",
+        "kind": "function",
+        "line": 287,
+        "doc": ""
+      },
+      {
+        "name": "test_outcome_event_with_raw_prompt_fails",
+        "kind": "function",
+        "line": 297,
+        "doc": "The privacy invariant: an event carrying request content is rejected."
+      },
+      {
+        "name": "test_credential_ref_rejects_literal_key",
+        "kind": "function",
+        "line": 311,
+        "doc": "A card can reference a credential but can never contain one."
+      },
+      {
+        "name": "test_metadata_rejects_unknown_key",
+        "kind": "function",
+        "line": 320,
+        "doc": "The envelope is plugin-authored, so an unknown key is a version skew."
+      },
+      {
+        "name": "test_metadata_rejects_wrong_protocol_version",
+        "kind": "function",
+        "line": 331,
+        "doc": "protocol_version != 1 must fail rather than be best-effort parsed."
+      },
+      {
+        "name": "test_excluded_candidate_requires_a_reason",
+        "kind": "function",
+        "line": 342,
+        "doc": "An exclusion with an empty reason list is unrepresentable."
+      },
+      {
+        "name": "test_identifier_fields_reject_oversized_values",
+        "kind": "function",
+        "line": 364,
+        "doc": "A 4 KB payload in any identifier field is rejected."
+      },
+      {
+        "name": "test_root_session_hash_rejects_raw_session_id",
+        "kind": "function",
+        "line": 386,
+        "doc": "The raw Hermes session id must not fit where its salted digest goes."
+      },
+      {
+        "name": "test_decision_id_pattern_is_anchored_at_both_ends",
+        "kind": "function",
+        "line": 414,
+        "doc": "``^dec_`` alone accepted ``dec_`` followed by an arbitrary payload."
+      },
+      {
+        "name": "test_occurred_at_rejects_non_rfc3339_values",
+        "kind": "function",
+        "line": 433,
+        "doc": "``format: date-time`` is annotation-only, so a ``pattern`` does the work."
+      },
+      {
+        "name": "test_reason_codes_reject_empty_and_duplicated",
+        "kind": "function",
+        "line": 450,
+        "doc": "The selection path must be as explainable as the exclusion path."
+      },
+      {
+        "name": "test_exclusion_reason_is_bounded_free_text",
+        "kind": "function",
+        "line": 468,
+        "doc": "The one free-text channel in the record is capped, and the description says so."
+      },
+      {
+        "name": "test_unknown_domain_tag_on_card_fails",
+        "kind": "function",
+        "line": 489,
+        "doc": "A misspelled affinity fails loudly instead of silently scoring zero."
+      },
+      {
+        "name": "test_candidate_id_constraint_is_identical_at_every_site",
+        "kind": "function",
+        "line": 525,
+        "doc": "The five places a candidate id appears must agree byte for byte."
+      },
+      {
+        "name": "test_decision_id_constraint_is_identical_at_both_sites",
+        "kind": "function",
+        "line": 548,
+        "doc": "A decision must be joinable to its own outcome events."
+      },
+      {
+        "name": "test_slash_delimited_candidate_id_round_trips",
+        "kind": "function",
+        "line": 556,
+        "doc": "``openai/gpt-4o`` must survive card -> decision -> outcome event."
+      },
+      {
+        "name": "test_candidate_id_rejects_malformed_separators",
+        "kind": "function",
+        "line": 615,
+        "doc": "Permitting ``/`` does not permit empty or unbounded segments."
+      },
+      {
+        "name": "test_version_fields_are_bounded",
+        "kind": "function",
+        "line": 639,
+        "doc": "``model_card_version`` and ``router_version`` were fully unconstrained."
+      },
+      {
+        "name": "test_version_fields_still_accept_a_version_shaped_credential",
+        "kind": "function",
+        "line": 660,
+        "doc": "Documented as OPEN BY DESIGN, asserted so nobody claims otherwise."
+      },
+      {
+        "name": "test_occurred_at_bounds_fractional_seconds",
+        "kind": "function",
+        "line": 679,
+        "doc": "``(\\.\\d+)?`` was an unbounded decimal channel."
+      },
+      {
+        "name": "test_occurred_at_range_checks_components",
+        "kind": "function",
+        "line": 710,
+        "doc": "The old shape-only pattern accepted ``2026-13-45T99:99:99Z``."
+      },
+      {
+        "name": "test_occurred_at_accepts_legal_rfc3339",
+        "kind": "function",
+        "line": 733,
+        "doc": "Range-checking must not reject values RFC 3339 permits."
+      },
+      {
+        "name": "test_occurred_at_is_not_calendar_validated",
+        "kind": "function",
+        "line": 744,
+        "doc": "Documented limitation, asserted so the description stays honest."
+      },
+      {
+        "name": "test_arrays_are_bounded",
+        "kind": "function",
+        "line": 764,
+        "doc": "Per-entry caps aggregate without ``maxItems``."
+      },
+      {
+        "name": "test_integer_fields_have_finite_ceilings",
+        "kind": "function",
+        "line": 795,
+        "doc": "JSON integers are arbitrary-precision, so ``minimum: 0`` alone is unbounded."
+      },
+      {
+        "name": "test_error_class_enforces_snake_case",
+        "kind": "function",
+        "line": 837,
+        "doc": "The 64-character cap alone accepted 64 characters of anything."
+      },
+      {
+        "name": "test_error_class_accepts_the_documented_vocabulary",
+        "kind": "function",
+        "line": 846,
+        "doc": ""
+      },
+      {
+        "name": "test_decision_id_accepts_the_obvious_generators",
+        "kind": "function",
+        "line": 861,
+        "doc": "``\"dec_\" + str(uuid4())`` and snake_case ids must validate."
+      },
+      {
+        "name": "test_legitimate_real_world_values_all_validate",
+        "kind": "function",
+        "line": 891,
+        "doc": "One pass over every tightened field with a value a real system produces."
+      },
+      {
+        "name": "test_outcome_event_maximum_serialized_size_matches_its_description",
+        "kind": "function",
+        "line": 939,
+        "doc": "The size ceiling the description quotes must be the real one."
+      },
+      {
+        "name": "test_route_decision_free_text_ceiling_matches_its_description",
+        "kind": "function",
+        "line": 986,
+        "doc": "64 exclusions x 8 reasons x 200 characters = 102,400, as described."
+      },
+      {
+        "name": "test_descriptions_make_no_absolute_containment_claim",
+        "kind": "function",
+        "line": 1037,
+        "doc": "Descriptions must not promise more than the schema delivers."
+      },
+      {
+        "name": "test_descriptions_name_the_write_path_owner",
+        "kind": "function",
+        "line": 1077,
+        "doc": "Removing the false claim is only half the fix."
+      },
+      {
+        "name": "walk",
+        "kind": "function",
+        "line": 248,
+        "doc": ""
+      },
+      {
+        "name": "walk",
+        "kind": "function",
+        "line": 1054,
+        "doc": ""
+      }
+    ],
+    "tests/contract/test_schema_loader.py": [
+      {
+        "name": "test_load_schemas_finds_wire_schemas",
+        "kind": "function",
+        "line": 48,
+        "doc": ""
+      },
+      {
+        "name": "test_discovery_is_recursive",
+        "kind": "function",
+        "line": 55,
+        "doc": "Nested directories are discovered, which is what lets other plans add"
+      },
+      {
+        "name": "test_non_schema_json_is_ignored",
+        "kind": "function",
+        "line": 64,
+        "doc": "Only ``*.schema.json`` is picked up; other JSON in the tree is not."
+      },
+      {
+        "name": "test_missing_root_returns_empty",
+        "kind": "function",
+        "line": 71,
+        "doc": "A directory a later plan has not created yet is not an error."
+      },
+      {
+        "name": "test_empty_root_returns_empty",
+        "kind": "function",
+        "line": 76,
+        "doc": ""
+      },
+      {
+        "name": "test_duplicate_id_raises",
+        "kind": "function",
+        "line": 80,
+        "doc": ""
+      },
+      {
+        "name": "test_unparseable_file_raises",
+        "kind": "function",
+        "line": 92,
+        "doc": ""
+      },
+      {
+        "name": "test_missing_id_raises",
+        "kind": "function",
+        "line": 102,
+        "doc": ""
+      },
+      {
+        "name": "test_non_object_schema_raises",
+        "kind": "function",
+        "line": 111,
+        "doc": "A top-level array must raise SchemaLoadError, not TypeError."
+      },
+      {
+        "name": "test_cross_file_ref_resolves_through_the_registry",
+        "kind": "function",
+        "line": 151,
+        "doc": "A ``$ref`` naming another loaded file's ``$id`` is enforced, not ignored."
+      },
+      {
+        "name": "test_unresolvable_ref_raises_schema_load_error",
+        "kind": "function",
+        "line": 171,
+        "doc": "An unresolvable ``$ref`` surfaces as ``SchemaLoadError``, naming the ref."
+      },
+      {
+        "name": "test_unresolvable_ref_is_raised_eagerly",
+        "kind": "function",
+        "line": 196,
+        "doc": "The error does not depend on the instance reaching the ``$ref``."
+      },
+      {
+        "name": "test_unresolvable_ref_chains_the_public_referencing_error",
+        "kind": "function",
+        "line": 214,
+        "doc": "The wrapped cause is ``referencing.exceptions.Unresolvable``."
+      },
+      {
+        "name": "test_wire_only_load_is_not_a_silent_partial_validation",
+        "kind": "function",
+        "line": 231,
+        "doc": "Scope-loading ``wire`` fails loudly, on a plain request too."
+      },
+      {
+        "name": "test_build_validator_is_reusable_and_agrees_with_validate",
+        "kind": "function",
+        "line": 257,
+        "doc": "A hoisted validator accepts and rejects exactly what ``validate`` does."
+      },
+      {
+        "name": "test_build_validator_enforces_the_cross_file_ref",
+        "kind": "function",
+        "line": 277,
+        "doc": "A hoisted validator keeps the ``$ref``'d envelope rules, not just the shape."
+      },
+      {
+        "name": "test_build_validator_rejects_unknown_schema_id",
+        "kind": "function",
+        "line": 311,
+        "doc": ""
+      },
+      {
+        "name": "test_packaged_schema_set_matches_expected_ids",
+        "kind": "function",
+        "line": 316,
+        "doc": "An identity gate, not a count."
+      },
+      {
+        "name": "test_build_registry_covers_every_packaged_schema",
+        "kind": "function",
+        "line": 333,
+        "doc": "Every ``$id`` under the schema root is resolvable from the registry."
+      },
+      {
+        "name": "test_packaged_schemas_have_no_dangling_refs",
+        "kind": "function",
+        "line": 342,
+        "doc": "Every absolute ``$ref`` in the packaged tree resolves against the full load."
+      },
+      {
+        "name": "request",
+        "kind": "function",
+        "line": 282,
+        "doc": ""
+      },
+      {
+        "name": "refs",
+        "kind": "function",
+        "line": 351,
+        "doc": ""
+      }
+    ],
+    "tests/contract/test_wire_schemas.py": [
+      {
+        "name": "wire_schemas",
+        "kind": "function",
+        "line": 40,
+        "doc": "Every packaged schema, keyed by ``$id``."
+      },
+      {
+        "name": "fixture_dir",
+        "kind": "function",
+        "line": 54,
+        "doc": "Directory holding the synthetic wire fixtures."
+      },
+      {
+        "name": "test_valid_request_passes",
+        "kind": "function",
+        "line": 64,
+        "doc": ""
+      },
+      {
+        "name": "test_valid_request_with_tools_passes",
+        "kind": "function",
+        "line": 69,
+        "doc": "The hard cases from design.md 20.3 in one request."
+      },
+      {
+        "name": "test_json_schema_response_format_requires_its_payload",
+        "kind": "function",
+        "line": 99,
+        "doc": "``{\"type\": \"json_schema\"}`` alone is not a relayable request."
+      },
+      {
+        "name": "test_unknown_content_part_types_relay",
+        "kind": "function",
+        "line": 117,
+        "doc": "A relay schema must forward content parts it does not model."
+      },
+      {
+        "name": "test_known_content_part_types_stay_strictly_typed",
+        "kind": "function",
+        "line": 153,
+        "doc": "Opening the def to unknown part types must not loosen the known ones."
+      },
+      {
+        "name": "test_hermes_auto_envelope_is_validated_through_its_own_schema",
+        "kind": "function",
+        "line": 168,
+        "doc": "``_hermes_auto`` ``$ref``s the envelope schema, so its rules apply here."
+      },
+      {
+        "name": "test_invalid_request_missing_model_fails",
+        "kind": "function",
+        "line": 195,
+        "doc": "A request without ``model`` must be rejected."
+      },
+      {
+        "name": "test_valid_response_passes",
+        "kind": "function",
+        "line": 206,
+        "doc": ""
+      },
+      {
+        "name": "test_refusal_response_passes",
+        "kind": "function",
+        "line": 211,
+        "doc": "design.md 20.3 lists refusals as covered; this is the fixture that covers it."
+      },
+      {
+        "name": "test_response_usage_carries_cache_and_reasoning_detail",
+        "kind": "function",
+        "line": 228,
+        "doc": "design.md 7.5 reconciles predicted cost against actual cached-token usage."
+      },
+      {
+        "name": "test_every_stream_chunk_validates",
+        "kind": "function",
+        "line": 243,
+        "doc": ""
+      },
+      {
+        "name": "test_final_stream_chunk_carries_usage",
+        "kind": "function",
+        "line": 251,
+        "doc": "design.md 20.3: usage arrives on the final chunk when include_usage was set."
+      },
+      {
+        "name": "test_empty_delta_chunk_is_valid",
+        "kind": "function",
+        "line": 259,
+        "doc": "design.md 8.2: an empty delta is valid and must not be treated as an error."
+      },
+      {
+        "name": "test_fragmented_tool_arguments_concatenate_to_valid_json",
+        "kind": "function",
+        "line": 268,
+        "doc": "design.md 20.3: fragmented tool-call arguments parse only once reassembled."
+      }
+    ],
+    "tests/performance/test_baseline_determinism.py": [
+      {
+        "name": "baseline_dir",
+        "kind": "function",
+        "line": 63,
+        "doc": ""
+      },
+      {
+        "name": "corpus",
+        "kind": "function",
+        "line": 68,
+        "doc": ""
+      },
+      {
+        "name": "run_a",
+        "kind": "function",
+        "line": 73,
+        "doc": ""
+      },
+      {
+        "name": "run_b",
+        "kind": "function",
+        "line": 78,
+        "doc": ""
+      },
+      {
+        "name": "make_event",
+        "kind": "function",
+        "line": 82,
+        "doc": "Build a minimal schema-shaped outcome event with the five required keys."
+      },
+      {
+        "name": "make_run",
+        "kind": "function",
+        "line": 98,
+        "doc": "Wrap ``(task_id, event)`` pairs in the mandatory recorded-run shape."
+      },
+      {
+        "name": "test_report_is_byte_identical_across_runs",
+        "kind": "function",
+        "line": 117,
+        "doc": "The phase's reproducibility criterion, made executable."
+      },
+      {
+        "name": "test_markdown_render_is_deterministic",
+        "kind": "function",
+        "line": 126,
+        "doc": ""
+      },
+      {
+        "name": "test_report_is_independent_of_run_argument_order",
+        "kind": "function",
+        "line": 138,
+        "doc": "Argument order must not leak into the output."
+      },
+      {
+        "name": "test_report_is_independent_of_working_directory",
+        "kind": "function",
+        "line": 148,
+        "doc": "Proves ``generated_from`` holds basenames, not paths."
+      },
+      {
+        "name": "test_report_contains_no_volatile_fields",
+        "kind": "function",
+        "line": 171,
+        "doc": "A provenance field would invalidate every stored baseline comparison."
+      },
+      {
+        "name": "test_unknown_cost_is_not_counted_as_zero",
+        "kind": "function",
+        "line": 197,
+        "doc": "Null cost is unknown; zero cost is free. They must never be conflated."
+      },
+      {
+        "name": "test_unknown_cost_is_excluded_from_the_sum",
+        "kind": "function",
+        "line": 239,
+        "doc": "A null alongside a known cost must not drag the total toward zero."
+      },
+      {
+        "name": "test_integral_float_counts_aggregate_as_their_value",
+        "kind": "function",
+        "line": 270,
+        "doc": "``4200.0`` is the number 4200, not an unreadable value worth zero."
+      },
+      {
+        "name": "test_float_and_int_counts_aggregate_identically",
+        "kind": "function",
+        "line": 312,
+        "doc": "The serializer that produced a recording must not change its numbers."
+      },
+      {
+        "name": "test_unusable_count_is_raised_not_silently_zeroed",
+        "kind": "function",
+        "line": 349,
+        "doc": "A count that cannot be a count is malformed input, not a measurement of 0."
+      },
+      {
+        "name": "test_non_finite_measurement_is_raised_not_aggregated",
+        "kind": "function",
+        "line": 384,
+        "doc": "The library half of \"no aggregate field is ever ``nan`` or ``inf``\"."
+      },
+      {
+        "name": "test_absent_count_is_zero_not_an_error",
+        "kind": "function",
+        "line": 418,
+        "doc": "Not reported is not malformed."
+      },
+      {
+        "name": "test_malformed_run_raises_corpus_error",
+        "kind": "function",
+        "line": 473,
+        "doc": "A malformed run file must be diagnosable as such."
+      },
+      {
+        "name": "test_malformed_run_error_names_the_offending_index",
+        "kind": "function",
+        "line": 488,
+        "doc": "The index is the whole diagnostic value on a multi-file invocation."
+      },
+      {
+        "name": "test_malformed_event_error_names_the_entry_position",
+        "kind": "function",
+        "line": 498,
+        "doc": ""
+      },
+      {
+        "name": "test_percentile_on_single_sample_returns_that_sample",
+        "kind": "function",
+        "line": 521,
+        "doc": ""
+      },
+      {
+        "name": "test_empty_runs_produce_zero_report",
+        "kind": "function",
+        "line": 538,
+        "doc": ""
+      },
+      {
+        "name": "test_unknown_task_id_raises",
+        "kind": "function",
+        "line": 551,
+        "doc": ""
+      },
+      {
+        "name": "test_unknown_strategy_raises",
+        "kind": "function",
+        "line": 565,
+        "doc": ""
+      },
+      {
+        "name": "test_every_baseline_strategy_appears_in_report",
+        "kind": "function",
+        "line": 577,
+        "doc": "The report shape is stable even when eight of nine strategies are empty."
+      },
+      {
+        "name": "test_zero_success_group_renders_without_nan",
+        "kind": "function",
+        "line": 589,
+        "doc": "A group where every turn failed is reachable, so its render must be sane."
+      },
+      {
+        "name": "test_metric_summary_reports_all_five_dimensions",
+        "kind": "function",
+        "line": 643,
+        "doc": "design.md §18 Phase 0 item 5: quality, cost, latency, cache, tool calls."
+      }
+    ],
+    "tests/unit/test_benchmark_cli.py": [
+      {
+        "name": "malformed",
+        "kind": "function",
+        "line": 69,
+        "doc": "Return a factory writing *document* to a run file and returning its path."
+      },
+      {
+        "name": "test_exits_zero_on_the_real_fixtures",
+        "kind": "function",
+        "line": 89,
+        "doc": ""
+      },
+      {
+        "name": "test_markdown_is_the_default_format",
+        "kind": "function",
+        "line": 100,
+        "doc": ""
+      },
+      {
+        "name": "test_output_flag_writes_to_a_file",
+        "kind": "function",
+        "line": 108,
+        "doc": "``--output`` must divert the report, not duplicate it to stdout."
+      },
+      {
+        "name": "test_runs_argument_order_does_not_reach_the_output",
+        "kind": "function",
+        "line": 124,
+        "doc": "The reproducibility contract, asserted at the CLI boundary."
+      },
+      {
+        "name": "test_no_validate_still_renders_the_same_bytes",
+        "kind": "function",
+        "line": 148,
+        "doc": "Validation is a gate, not an input to the report."
+      },
+      {
+        "name": "test_run_file_that_is_a_json_array_exits_two",
+        "kind": "function",
+        "line": 170,
+        "doc": "Reproduces the ``'list' object has no attribute 'get'`` traceback."
+      },
+      {
+        "name": "test_run_file_with_non_list_events_exits_two",
+        "kind": "function",
+        "line": 184,
+        "doc": "Reproduces the ``'str' object has no attribute 'get'`` traceback."
+      },
+      {
+        "name": "test_run_file_with_non_mapping_event_exits_two",
+        "kind": "function",
+        "line": 201,
+        "doc": "Reproduces the ``pair[1].get(\"event_id\")`` traceback in metrics."
+      },
+      {
+        "name": "test_run_file_with_non_mapping_entry_exits_two",
+        "kind": "function",
+        "line": 220,
+        "doc": ""
+      },
+      {
+        "name": "test_top_level_non_object_run_exits_two",
+        "kind": "function",
+        "line": 230,
+        "doc": "No JSON top-level value other than an object may reach an aggregate."
+      },
+      {
+        "name": "test_unknown_task_id_exits_two",
+        "kind": "function",
+        "line": 245,
+        "doc": "A dropped task id would understate every per-task denominator."
+      },
+      {
+        "name": "test_unknown_strategy_exits_two",
+        "kind": "function",
+        "line": 274,
+        "doc": ""
+      },
+      {
+        "name": "test_missing_run_file_exits_two",
+        "kind": "function",
+        "line": 283,
+        "doc": ""
+      },
+      {
+        "name": "test_unparseable_run_file_exits_two",
+        "kind": "function",
+        "line": 290,
+        "doc": ""
+      },
+      {
+        "name": "test_missing_corpus_exits_two",
+        "kind": "function",
+        "line": 300,
+        "doc": ""
+      },
+      {
+        "name": "test_schema_violation_exits_two_by_default",
+        "kind": "function",
+        "line": 329,
+        "doc": "``minimum: 0`` in the schema is what catches a negative count first."
+      },
+      {
+        "name": "test_schema_violation_names_the_offending_entry",
+        "kind": "function",
+        "line": 342,
+        "doc": ""
+      },
+      {
+        "name": "test_no_validate_opts_out_of_the_schema_pass",
+        "kind": "function",
+        "line": 355,
+        "doc": "The opt-out must actually skip the schema, and only the schema."
+      },
+      {
+        "name": "test_negative_count_is_rejected_even_with_no_validate",
+        "kind": "function",
+        "line": 373,
+        "doc": "Defense in depth: aggregation refuses a bad count on its own."
+      },
+      {
+        "name": "test_non_finite_json_literal_exits_two",
+        "kind": "function",
+        "line": 401,
+        "doc": "``NaN`` in a run file must never render as a report at exit 0."
+      },
+      {
+        "name": "test_non_finite_renders_nothing_at_all",
+        "kind": "function",
+        "line": 433,
+        "doc": "The failure is total, not partial: no report escapes to stdout."
+      },
+      {
+        "name": "test_missing_schema_is_reported_not_traced",
+        "kind": "function",
+        "line": 444,
+        "doc": "A broken install exits 2 with a distinct message, not a ``KeyError``."
+      },
+      {
+        "name": "test_float_counts_aggregate_through_the_cli",
+        "kind": "function",
+        "line": 463,
+        "doc": "A serializer that round-trips counts through floats must still aggregate."
+      },
+      {
+        "name": "write",
+        "kind": "function",
+        "line": 72,
+        "doc": ""
+      }
+    ],
+    "tests/unit/test_compatibility.py": [
+      {
+        "name": "test_in_range_version_is_compatible",
+        "kind": "function",
+        "line": 27,
+        "doc": "Versions inside the supported range are compatible and usable."
+      },
+      {
+        "name": "test_out_of_range_version_is_unsupported",
+        "kind": "function",
+        "line": 42,
+        "doc": "Versions outside the range are unsupported, and say so actionably."
+      },
+      {
+        "name": "test_unparseable_version_is_unreadable",
+        "kind": "function",
+        "line": 58,
+        "doc": "A version that will not parse must never fall through to COMPATIBLE."
+      },
+      {
+        "name": "test_prerelease_inside_range_is_compatible",
+        "kind": "function",
+        "line": 70,
+        "doc": "A pre-release inside the range is in-range."
+      },
+      {
+        "name": "test_distribution_name_is_hermes_agent",
+        "kind": "function",
+        "line": 82,
+        "doc": "Regression guard for the distribution name."
+      },
+      {
+        "name": "test_calver_tag_is_not_treated_as_a_version",
+        "kind": "function",
+        "line": 92,
+        "doc": "A Hermes git tag must not be mistaken for a distribution version."
+      },
+      {
+        "name": "test_detect_reads_the_configured_distribution_name",
+        "kind": "function",
+        "line": 111,
+        "doc": "HERMES_DISTRIBUTION_NAME must be the real indirection point."
+      },
+      {
+        "name": "test_missing_hermes_reports_not_installed",
+        "kind": "function",
+        "line": 131,
+        "doc": "An absent Hermes is reported explicitly and is not usable."
+      },
+      {
+        "name": "test_detect_returns_none_when_distribution_absent",
+        "kind": "function",
+        "line": 151,
+        "doc": "PackageNotFoundError becomes None, not an exception."
+      },
+      {
+        "name": "test_no_status_other_than_compatible_is_usable",
+        "kind": "function",
+        "line": 164,
+        "doc": "Only COMPATIBLE is usable -- for every status, present and future."
+      },
+      {
+        "name": "test_supported_range_is_a_valid_specifier",
+        "kind": "function",
+        "line": 182,
+        "doc": "A typo in SUPPORTED_HERMES is caught here rather than at startup."
+      },
+      {
+        "name": "recorder",
+        "kind": "function",
+        "line": 121,
+        "doc": ""
+      },
+      {
+        "name": "raiser",
+        "kind": "function",
+        "line": 156,
+        "doc": ""
+      }
+    ],
+    "tests/unit/test_package_layout.py": [
+      {
+        "name": "test_top_level_package_imports",
+        "kind": "function",
+        "line": 32,
+        "doc": "The distribution's import package exposes a non-empty version string."
+      },
+      {
+        "name": "test_all_subpackages_importable",
+        "kind": "function",
+        "line": 40,
+        "doc": "Every subpackage named in design.md §17 imports without error."
+      },
+      {
+        "name": "test_test_tree_directories_exist",
+        "kind": "function",
+        "line": 47,
+        "doc": "All eight tests/ subdirectories from design.md §17 exist."
+      }
+    ]
+  },
+  "import_edges": {
+    "scripts/benchmark.py": [
+      "__future__",
+      "argparse",
+      "hermes_auto",
+      "json",
+      "jsonschema",
+      "pathlib",
+      "sys",
+      "typing"
+    ],
+    "src/hermes_auto/__init__.py": [
+      "version"
+    ],
+    "src/hermes_auto/compatibility.py": [
+      "__future__",
+      "dataclasses",
+      "enum",
+      "importlib",
+      "packaging"
+    ],
+    "src/hermes_auto/evaluation/baselines.py": [
+      "__future__",
+      "dataclasses",
+      "hermes_auto",
+      "json"
+    ],
+    "src/hermes_auto/evaluation/corpus.py": [
+      "__future__",
+      "dataclasses",
+      "pathlib",
+      "yaml"
+    ],
+    "src/hermes_auto/evaluation/metrics.py": [
+      "__future__",
+      "dataclasses",
+      "hermes_auto",
+      "math"
+    ],
+    "src/hermes_auto/gateway/schemas.py": [
+      "__future__",
+      "json",
+      "jsonschema",
+      "pathlib",
+      "referencing"
+    ],
+    "tests/conftest.py": [
+      "pathlib",
+      "pytest"
+    ],
+    "tests/contract/test_routing_schemas.py": [
+      "copy",
+      "hashlib",
+      "hermes_auto",
+      "json",
+      "jsonschema",
+      "pathlib",
+      "pytest",
+      "uuid"
+    ],
+    "tests/contract/test_schema_loader.py": [
+      "__future__",
+      "hermes_auto",
+      "json",
+      "jsonschema",
+      "pathlib",
+      "pytest",
+      "referencing"
+    ],
+    "tests/contract/test_wire_schemas.py": [
+      "__future__",
+      "copy",
+      "hermes_auto",
+      "json",
+      "jsonschema",
+      "pathlib",
+      "pytest"
+    ],
+    "tests/performance/test_baseline_determinism.py": [
+      "__future__",
+      "hermes_auto",
+      "json",
+      "pathlib",
+      "pytest"
+    ],
+    "tests/unit/test_benchmark_cli.py": [
+      "__future__",
+      "importlib",
+      "json",
+      "pathlib",
+      "pytest",
+      "sys",
+      "types"
+    ],
+    "tests/unit/test_compatibility.py": [
+      "__future__",
+      "hermes_auto",
+      "importlib",
+      "packaging",
+      "pytest"
+    ],
+    "tests/unit/test_package_layout.py": [
+      "importlib",
+      "pathlib"
+    ]
+  }
+}
