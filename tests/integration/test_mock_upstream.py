@@ -40,6 +40,11 @@ from tests.integration.mock_upstream import (
     split_frames,
 )
 
+# Windows allocates a fresh console window for a console-subsystem child when the
+# parent has no console of its own. CREATE_NO_WINDOW suppresses it; it is absent on
+# POSIX, hence getattr.
+_NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 SSE_CHUNK_SCHEMA_ID = (
     "https://hermes-auto-router.dev/schema/wire/sse-stream-contract.v1.json"
 )
@@ -199,6 +204,7 @@ def test_git_does_not_translate_fixture_bytes() -> None:
         capture_output=True,
         text=True,
         cwd=pathlib.Path(__file__).resolve().parent.parent.parent,
+        creationflags=_NO_CONSOLE_WINDOW,
     )
     if result.returncode != 0:  # pragma: no cover - not a git checkout
         pytest.skip(f"git check-attr unavailable: {result.stderr.strip()}")

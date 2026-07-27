@@ -52,6 +52,11 @@ import subprocess
 import sys
 import threading
 
+# Windows allocates a fresh console window for a console-subsystem child when the
+# parent has no console of its own. CREATE_NO_WINDOW suppresses it; it is absent on
+# POSIX, hence getattr.
+_NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 __all__ = [
     "BANNED_KEYS",
     "RedactionError",
@@ -181,6 +186,7 @@ def _restrict_permissions(path: pathlib.Path) -> None:
             capture_output=True,
             text=True,
             check=False,
+            creationflags=_NO_CONSOLE_WINDOW,
         )
     except OSError as exc:  # icacls absent or not executable
         raise RedactionError(f"{path}: could not run icacls: {exc}") from exc

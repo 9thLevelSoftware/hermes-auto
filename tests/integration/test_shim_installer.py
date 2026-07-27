@@ -38,6 +38,11 @@ from hermes_auto.hermes_shim.template import MARKER, SHIM_SOURCE, render
 from hermes_auto.provider import ENVELOPE_KEY, build_envelope
 from hermes_auto.version import __version__
 
+# Windows allocates a fresh console window for a console-subsystem child when the
+# parent has no console of its own. CREATE_NO_WINDOW suppresses it; it is absent on
+# POSIX, hence getattr.
+_NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 METADATA_SCHEMA_ID = (
     "https://hermes-auto-router.dev/schema/routing/hermes-auto-metadata.v1.json"
 )
@@ -655,6 +660,7 @@ def test_real_hermes_discovers_the_installed_provider(
         capture_output=True,
         text=True,
         timeout=180,
+        creationflags=_NO_CONSOLE_WINDOW,
     )
 
     assert completed.returncode == 0, completed.stderr[-2000:]
@@ -697,6 +703,7 @@ def test_real_hermes_does_not_know_the_provider_before_installation(
         capture_output=True,
         text=True,
         timeout=180,
+        creationflags=_NO_CONSOLE_WINDOW,
     )
 
     assert completed.returncode == 0, completed.stderr[-2000:]

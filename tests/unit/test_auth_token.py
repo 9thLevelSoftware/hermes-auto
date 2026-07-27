@@ -28,6 +28,11 @@ from hermes_auto.gateway.auth import (
 )
 from hermes_auto.state.paths import STATE_DIR_ENV_VAR, token_path
 
+# Windows allocates a fresh console window for a console-subsystem child when the
+# parent has no console of its own. CREATE_NO_WINDOW suppresses it; it is absent on
+# POSIX, hence getattr.
+_NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 @pytest.fixture(autouse=True)
 def _isolated_state(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
@@ -282,6 +287,7 @@ def test_readback_sees_a_widened_acl() -> None:
         capture_output=True,
         text=True,
         check=False,
+        creationflags=_NO_CONSOLE_WINDOW,
     )
     if completed.returncode != 0:
         pytest.skip(f"could not widen the ACL to test the readback: {completed.stderr}")

@@ -67,6 +67,11 @@ from hermes_auto.gateway.app import create_app
 from hermes_auto.gateway.auth import mint_token, read_token
 from hermes_auto.gateway.errors import assert_error_body
 
+# Windows allocates a fresh console window for a console-subsystem child when the
+# parent has no console of its own. CREATE_NO_WINDOW suppresses it; it is absent on
+# POSIX, hence getattr.
+_NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 pytestmark = pytest.mark.contract
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -1009,6 +1014,7 @@ def test_the_recorded_admin_port_names_a_listener_that_is_accepting(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        creationflags=_NO_CONSOLE_WINDOW,
     )
     runtime_file = state / "runtime" / "gateway.json"
     try:

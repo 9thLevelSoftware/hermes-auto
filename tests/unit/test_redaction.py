@@ -41,6 +41,11 @@ from hermes_auto.telemetry.redaction import (
     session_digest,
 )
 
+# Windows allocates a fresh console window for a console-subsystem child when the
+# parent has no console of its own. CREATE_NO_WINDOW suppresses it; it is absent on
+# POSIX, hence getattr.
+_NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 #: The pattern Phase 1 froze on ``root_session_hash`` in ``outcome-event.v1``
 #: and ``route-decision.v1``. Reproduced literally so a drift in either the
 #: schema or the digest shows up here.
@@ -128,6 +133,7 @@ def test_salt_file_permissions_are_restricted(tmp_path):
         capture_output=True,
         text=True,
         check=True,
+        creationflags=_NO_CONSOLE_WINDOW,
     )
     acl = completed.stdout
 
