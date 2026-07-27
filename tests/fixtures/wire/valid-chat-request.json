@@ -1,0 +1,9 @@
+{
+  "model": "test-model-a",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Synthetic fixture prompt: reply with the word acknowledged."
+    }
+  ]
+}

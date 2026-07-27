@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-auto-router.dev/schema/wire/openai-chat-response.v1.json",
+  "title": "OpenAI Chat Completions Response (hermes-auto-router wire subset, v1)",
+  "description": "The non-streaming response body the local routing gateway returns from POST /v1/chat/completions (design.md 5.3). This is the machine-checkable definition of 'the gateway behaves identically to the upstream provider' for the non-streaming path. Unknown keys are permitted because providers add fields the gateway relays unchanged; every key defined here is strictly typed. The usage block carries cached- and reasoning-token detail because design.md 7.5 requires reconciling the router's predicted cost against actual cached-token usage.",
+  "type": "object",
+  "required": ["id", "object", "created", "model", "choices"],
+  "additionalProperties": true,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "object": { "const": "chat.completion" },
+    "created": {
+      "type": "integer",
+      "description": "Unix timestamp in seconds."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The model that actually produced the completion."
+    },
+    "choices": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/choice" }
+    },
+    "system_fingerprint": { "type": ["string", "null"] },
+    "service_tier": { "type": ["string", "null"] },
+    "usage": { "$ref": "#/$defs/usage" }
+  },
+  "$defs": {
+    "choice": {
+      "type": "object",
+      "required": ["index", "message", "finish_reason"],
+      "additionalProperties": true,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "message": { "$ref": "#/$defs/assistantMessage" },
+        "finish_reason": {
+          "description": "Why generation stopped. Null is valid while a provider has not yet decided.",
+          "enum": ["stop", "length", "tool_calls", "content_filter", null]
+        },
+        "logprobs": { "type": ["object", "null"] }
+      }
+    },
+    "assistantMessage": {
+      "type": "object",
+      "required": ["role"],
+      "additionalProperties": true,
+      "properties": {
+        "role": { "const": "assistant" },
+        "content": { "type": ["string", "null"] },
+        "refusal": {
+          "type": ["string", "null"],
+          "description": "Provider refusal text (design.md 20.3, 'refusals'). Null when the model did not refuse."
+        },
+        "tool_calls": {
+          "type": "array",
+          "description": "Tool calls the model emitted. More than one entry represents parallel tool calls.",
+          "items": { "$ref": "#/$defs/toolCall" }
+        }
+      }
+    },
+    "toolCall": {
+      "type": "object",
+      "required": ["id", "type", "function"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "const": "function" },
+        "function": {
+          "type": "object",
+          "required": ["name", "arguments"],
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "arguments": {
+              "type": "string",
+              "description": "JSON-encoded argument object, carried as a string."
+            }
+          }
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "description": "Token accounting. cached_tokens and reasoning_tokens are load-bearing: design.md 7.5 reconciles the router's expected-cost prediction against actual cached-token usage, and reasoning tokens dominate output cost on reasoning models.",
+      "additionalProperties": true,
+      "properties": {
+        "prompt_tokens": { "type": "integer", "minimum": 0 },
+        "completion_tokens": { "type": "integer", "minimum": 0 },
+        "total_tokens": { "type": "integer", "minimum": 0 },
+        "prompt_tokens_details": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "cached_tokens": { "type": "integer", "minimum": 0 },
+            "audio_tokens": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "completion_tokens_details": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "reasoning_tokens": { "type": "integer", "minimum": 0 },
+            "audio_tokens": { "type": "integer", "minimum": 0 },
+            "accepted_prediction_tokens": { "type": "integer", "minimum": 0 },
+            "rejected_prediction_tokens": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}
