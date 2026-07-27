@@ -1,0 +1,95 @@
+# Fixed-model baseline task corpus (design.md §15.3, dynamic execution track).
+#
+# CONTENT-FREE BY CONSTRUCTION. Every `description` below names the *shape* of a
+# unit of work, never its content. This file must never contain prompt text,
+# code, diffs, stack traces, log excerpts, real repository or file-system paths,
+# hostnames, user identifiers, or credentials of any kind. "Fix a
+# null-dereference crash surfaced by a failing unit test" is a correct
+# description; pasting the actual traceback is not. The prohibition follows
+# `docs/privacy.md` ("raw prompt text is never stored") and `01-CONTEXT.md`
+# constraint 4, and it applies to this corpus exactly as it applies to the
+# telemetry store.
+#
+# `task_id` values are the join key between this corpus and every recorded run.
+# They are published identifiers: once a baseline has been recorded against an
+# id, that id must never be renamed or reused for different work, because doing
+# so silently invalidates every stored comparison. Add new tasks with new ids
+# instead.
+#
+# `verifiable: true` means success is mechanically checkable — a test outcome, a
+# process exit code, or an observable file state — with no judge in the loop.
+# design.md §14.3 prefers execution-derived evidence, so a majority of the
+# corpus is deliberately mechanically verifiable.
+#
+# `expected_tool_calls` is an approximate tool-call count that indicates the
+# agent actually performed the work rather than answering from memory. `null`
+# means no meaningful expectation exists for that category.
+
+version: 1
+
+tasks:
+  - task_id: bug-fix-null-deref-01
+    category: bug_fixing
+    description: Fix a null-dereference crash surfaced by a single failing unit test in a small library.
+    expected_tool_calls: 6
+    verifiable: true
+
+  - task_id: bug-fix-off-by-one-02
+    category: bug_fixing
+    description: Correct an off-by-one boundary error in a pagination helper so the existing test suite passes.
+    expected_tool_calls: 5
+    verifiable: true
+
+  - task_id: context-compress-long-thread-01
+    category: context_compression
+    description: Continue a long multi-turn task after the conversation exceeds the context window and must be compressed.
+    expected_tool_calls: null
+    verifiable: false
+
+  - task_id: data-extract-structured-01
+    category: data_extraction
+    description: Extract a fixed set of fields from a semi-structured document into a schema-validated JSON object.
+    expected_tool_calls: 3
+    verifiable: true
+
+  - task_id: feature-add-cli-flag-01
+    category: feature_implementation
+    description: Add a new command-line flag to an existing CLI, with argument parsing, help text, and a covering test.
+    expected_tool_calls: 9
+    verifiable: true
+
+  - task_id: feature-add-retry-policy-02
+    category: feature_implementation
+    description: Implement a bounded retry policy with backoff behind an existing client interface, without changing callers.
+    expected_tool_calls: 10
+    verifiable: true
+
+  - task_id: refactor-extract-module-01
+    category: refactoring
+    description: Extract a cohesive group of functions into a new module and update imports with no behavior change.
+    expected_tool_calls: 11
+    verifiable: true
+
+  - task_id: shell-multi-step-pipeline-01
+    category: multi_step_shell
+    description: Run a multi-step build-and-check sequence in a scratch directory where each step depends on the previous exit status.
+    expected_tool_calls: 8
+    verifiable: true
+
+  - task_id: test-repair-fixture-drift-01
+    category: test_repair
+    description: Repair a test suite broken by fixture drift after a dependency upgrade, without weakening the assertions.
+    expected_tool_calls: 7
+    verifiable: true
+
+  - task_id: vision-assisted-layout-01
+    category: vision_assisted
+    description: Describe and correct a layout defect that is only apparent from a supplied rendered screenshot.
+    expected_tool_calls: 2
+    verifiable: false
+
+  - task_id: web-research-api-survey-01
+    category: web_research
+    description: Survey publicly documented interfaces of a third-party service and summarize the options relevant to one decision.
+    expected_tool_calls: 4
+    verifiable: false

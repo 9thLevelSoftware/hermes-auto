@@ -1,0 +1,269 @@
+"""Deterministic aggregation of recorded runs into baseline metrics.
+
+This module reads *already recorded* outcome events and reduces them to the five
+dimensions design.md §18 Phase 0 item 5 requires — quality, cost, latency,
+cache, and tool calls. It calls no model provider, opens no socket, and reads no
+credential; producing recordings against real providers is Phase 8 work.
+
+Input shape
+-----------
+A *run* is a mapping with a ``strategy``, an optional ``model_label``, and an
+``events`` list. Each entry of ``events`` is exactly::
+
+    {"task_id": "<corpus task id>", "event": { ...outcome event... }}
+
+The wrapper is not a stylistic choice. ``outcome-event.v1.schema.json`` sets
+``additionalProperties: false`` and defines no ``task_id``, so a ``task_id``
+placed *inside* an event can never validate. The join key therefore lives beside
+the event, and only ``entry["event"]`` is ever validated against the schema.
+
+Two invariants
+--------------
+**Unknown cost is never zero.** ``actual_cost_usd`` is nullable and null means
+*unknown* — an unpriced local candidate, or a provider that did not report a
+figure. Only known values are summed into :attr:`MetricSummary.total_cost_usd`;
+everything else is counted into :attr:`MetricSummary.unknown_cost_count`. This
+mirrors design.md §7.5 and is the single most important property in this module:
+without it a later phase could conclude that the candidate it knows least about
+is free.
+
+**No field is ever ``nan`` or ``inf``.** Every ratio and mean divides by a
+denominator that can legitimately be zero — a group of entirely failed turns has
+no successes, and a fully cached-free group has no input tokens. Each such
+expression yields ``0.0`` instead. ``f"{float('nan'):.6f}"`` renders the literal
+text ``nan``, which would defeat the byte-comparison that is this phase's
+reproducibility criterion.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import math
+
+__all__ = ["MetricSummary", "aggregate"]
+
+#: Decimal places every float field is rounded to before it is stored. Fixed
+#: precision is what makes repeated aggregation byte-identical downstream.
+_PRECISION = 6
+
+
+@dataclasses.dataclass(frozen=True)
+class MetricSummary:
+    """Aggregated baseline metrics for one group of recorded runs.
+
+    Fields are grouped by the five dimensions design.md §18 Phase 0 item 5 names.
+
+    Quality:
+        event_count: Number of events aggregated.
+        distinct_task_count: Number of distinct ``task_id`` values seen. This is
+            the denominator for per-task rates; it is never called
+            ``task_count``, which on :class:`~hermes_auto.evaluation.baselines.BaselineReport`
+            means the size of the corpus instead.
+        succeeded_count: Number of distinct tasks with at least one event
+            reporting ``turn_succeeded: true``.
+        success_rate: ``succeeded_count / distinct_task_count``, or ``0.0``.
+        invalid_tool_call_count: Sum of ``invalid_tool_call_count``.
+        empty_response_count: Number of events flagged ``empty_response: true``.
+
+    Economics:
+        total_cost_usd: Sum of **known** ``actual_cost_usd`` values only.
+        known_cost_count: Events carrying a numeric ``actual_cost_usd``.
+        unknown_cost_count: Events whose cost is null or absent. Never folded
+            into ``total_cost_usd`` as zero.
+        mean_cost_per_succeeded_task: ``total_cost_usd / succeeded_count``, or
+            ``0.0``. Understates true cost whenever ``unknown_cost_count`` is
+            non-zero, which is why that count is reported alongside it.
+
+    Performance:
+        ttft_ms_p50, ttft_ms_p95: Nearest-rank percentiles of ``ttft_ms``.
+        total_latency_ms_p50, total_latency_ms_p95: Nearest-rank percentiles of
+            ``total_latency_ms``.
+
+    Cache:
+        total_input_tokens: Sum of ``input_tokens``.
+        total_cached_tokens: Sum of ``cached_tokens``.
+        cached_token_ratio: ``total_cached_tokens / total_input_tokens``, or
+            ``0.0``.
+
+    Tool calls:
+        total_tool_calls: Sum of ``tool_call_count``.
+        mean_tool_calls_per_task: ``total_tool_calls / distinct_task_count``, or
+            ``0.0``.
+    """
+
+    # Quality
+    event_count: int = 0
+    distinct_task_count: int = 0
+    succeeded_count: int = 0
+    success_rate: float = 0.0
+    invalid_tool_call_count: int = 0
+    empty_response_count: int = 0
+
+    # Economics
+    total_cost_usd: float = 0.0
+    known_cost_count: int = 0
+    unknown_cost_count: int = 0
+    mean_cost_per_succeeded_task: float = 0.0
+
+    # Performance
+    ttft_ms_p50: float = 0.0
+    ttft_ms_p95: float = 0.0
+    total_latency_ms_p50: float = 0.0
+    total_latency_ms_p95: float = 0.0
+
+    # Cache
+    total_input_tokens: int = 0
+    total_cached_tokens: int = 0
+    cached_token_ratio: float = 0.0
+
+    # Tool calls
+    total_tool_calls: int = 0
+    mean_tool_calls_per_task: float = 0.0
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    """Return ``numerator / denominator``, or ``0.0`` when the denominator is 0.
+
+    Every division in this module goes through here. A zero denominator is a
+    reachable state, not a theoretical one: a group in which every turn failed
+    has ``succeeded_count == 0``, and a group with no reported usage has
+    ``total_input_tokens == 0``.
+    """
+    if not denominator:
+        return 0.0
+    result = numerator / denominator
+    if math.isnan(result) or math.isinf(result):
+        return 0.0
+    return result
+
+
+def _percentile(values: list[float], percent: float) -> float:
+    """Nearest-rank percentile of *values*.
+
+    An empty input yields ``0.0``; a single sample yields that sample, which is
+    the behavior the baseline harness relies on when a task was recorded once.
+    Nearest-rank is used in preference to an interpolating estimator because it
+    always returns an observed value and needs no tie-breaking rule, so repeated
+    runs cannot diverge in the last bits of a float.
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = math.ceil(percent / 100.0 * len(ordered))
+    index = min(max(rank, 1), len(ordered)) - 1
+    return float(ordered[index])
+
+
+def _as_count(value: object) -> int:
+    """Return *value* as a non-negative count, or 0 when absent or unusable."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value if value > 0 else 0
+
+
+def _sorted_entries(runs: list[dict]) -> list[tuple[str, dict]]:
+    """Flatten *runs* into ``(task_id, event)`` pairs in a deterministic order.
+
+    Sorted by ``(task_id, event_id)`` rather than left in parsed-JSON order, so
+    neither file order nor the order the caller passed ``--runs`` can influence
+    the sequence in which floats are summed.
+    """
+    pairs: list[tuple[str, dict]] = []
+    for run in runs:
+        for entry in run.get("events", ()):
+            task_id = entry.get("task_id", "")
+            event = entry.get("event") or {}
+            pairs.append((str(task_id), event))
+    return sorted(pairs, key=lambda pair: (pair[0], str(pair[1].get("event_id", ""))))
+
+
+def aggregate(runs: list[dict]) -> MetricSummary:
+    """Reduce *runs* to a single :class:`MetricSummary`.
+
+    Args:
+        runs: Recorded-run mappings. An empty list is valid and produces a
+            zero-valued summary rather than raising — an empty baseline is a
+            reportable state, not an error.
+
+    Returns:
+        The aggregated summary. Every float field is rounded to six decimal
+        places, and no field is ever ``nan`` or ``inf``.
+    """
+    entries = _sorted_entries(runs)
+
+    task_ids: set[str] = set()
+    succeeded_tasks: set[str] = set()
+    invalid_tool_calls = 0
+    empty_responses = 0
+    total_cost = 0.0
+    known_cost_count = 0
+    unknown_cost_count = 0
+    ttft_samples: list[float] = []
+    latency_samples: list[float] = []
+    total_input_tokens = 0
+    total_cached_tokens = 0
+    total_tool_calls = 0
+
+    for task_id, event in entries:
+        task_ids.add(task_id)
+
+        if event.get("turn_succeeded") is True:
+            succeeded_tasks.add(task_id)
+
+        invalid_tool_calls += _as_count(event.get("invalid_tool_call_count"))
+        if event.get("empty_response") is True:
+            empty_responses += 1
+
+        # Unknown cost is counted, never valued at zero. `None` and an absent
+        # key are both unknown: a missing measurement is not evidence of a free
+        # turn.
+        cost = event.get("actual_cost_usd")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            total_cost += float(cost)
+            known_cost_count += 1
+        else:
+            unknown_cost_count += 1
+
+        ttft = event.get("ttft_ms")
+        if isinstance(ttft, (int, float)) and not isinstance(ttft, bool):
+            ttft_samples.append(float(ttft))
+        latency = event.get("total_latency_ms")
+        if isinstance(latency, (int, float)) and not isinstance(latency, bool):
+            latency_samples.append(float(latency))
+
+        total_input_tokens += _as_count(event.get("input_tokens"))
+        total_cached_tokens += _as_count(event.get("cached_tokens"))
+        total_tool_calls += _as_count(event.get("tool_call_count"))
+
+    distinct_task_count = len(task_ids)
+    succeeded_count = len(succeeded_tasks)
+
+    return MetricSummary(
+        event_count=len(entries),
+        distinct_task_count=distinct_task_count,
+        succeeded_count=succeeded_count,
+        success_rate=round(
+            _safe_ratio(succeeded_count, distinct_task_count), _PRECISION
+        ),
+        invalid_tool_call_count=invalid_tool_calls,
+        empty_response_count=empty_responses,
+        total_cost_usd=round(total_cost, _PRECISION),
+        known_cost_count=known_cost_count,
+        unknown_cost_count=unknown_cost_count,
+        mean_cost_per_succeeded_task=round(
+            _safe_ratio(total_cost, succeeded_count), _PRECISION
+        ),
+        ttft_ms_p50=round(_percentile(ttft_samples, 50.0), _PRECISION),
+        ttft_ms_p95=round(_percentile(ttft_samples, 95.0), _PRECISION),
+        total_latency_ms_p50=round(_percentile(latency_samples, 50.0), _PRECISION),
+        total_latency_ms_p95=round(_percentile(latency_samples, 95.0), _PRECISION),
+        total_input_tokens=total_input_tokens,
+        total_cached_tokens=total_cached_tokens,
+        cached_token_ratio=round(
+            _safe_ratio(total_cached_tokens, total_input_tokens), _PRECISION
+        ),
+        total_tool_calls=total_tool_calls,
+        mean_tool_calls_per_task=round(
+            _safe_ratio(total_tool_calls, distinct_task_count), _PRECISION
+        ),
+    )
