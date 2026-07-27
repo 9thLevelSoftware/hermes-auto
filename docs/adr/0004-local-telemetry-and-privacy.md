@@ -97,13 +97,24 @@ the user-facing privacy documentation from it**, and Phase 8 implements the SQLi
   wrong, we have the feature vector and the score, not the prompt that produced them. Reproducing a
   bad decision requires the user to reconstruct the input, and some classes of bug will be
   diagnosable only from a user-supplied reproduction.
-- **Salted hashing makes cross-machine correlation impossible by design.** The salt is local, so the
-  same conversation on two machines hashes differently. Fleet-level analysis across installs is not
-  merely disabled: `root_session_hash` is constrained to `^[0-9a-f]{64}$` in both
-  `outcome-event.v1` and `route-decision.v1`, so only a fixed-width local-salt digest validates and
-  a raw, cross-machine-stable session id cannot be written to the field at all. Re-enabling
-  correlation means widening that pattern, which requires a schema version bump and the review that
-  implies — it is not a change a future feature can make quietly.
+- **Salted hashing gives up cross-machine correlation by design, and the enforcement is split across
+  two phases.** The salt is local, so the same conversation on two machines hashes differently and
+  fleet-level analysis across installs is unavailable. It is worth recording precisely what enforces
+  which half of that, because the schema does less here than it appears to.
+  `root_session_hash` is constrained to `^[0-9a-f]{64}$` in both `outcome-event.v1` and
+  `route-decision.v1`. That bounds the field's **shape**: only a fixed-width lowercase hex digest
+  validates, so a raw Hermes session id, a prompt, or a credential cannot be written there, and
+  widening the pattern requires a schema version bump and the review that implies. The pattern
+  does **not** establish that the digest is salted — an unsalted `sha256(session_id)` is also
+  sixty-four lowercase hex characters, validates identically, is stable across every machine running
+  the same session, and is reversible by enumerating the session-id space. Salting is a property of
+  the code that writes the record, not of the schema: it lands in Phase 8 in `telemetry/events.py`,
+  which generates the per-install salt and applies it before the digest reaches
+  `telemetry/sqlite.py`, and it is tested there — the same session id under two different salts must
+  produce different digests, and the raw id must never reach the field. **Phase 1 ships no
+  structural backstop for that half of the property.** The consequence to accept is that the
+  privacy guarantee here is one part contract and one part future code, and only the contract half
+  is verifiable today.
 - **Training corpora for the learning phases require an explicit separate opt-in** rather than
   reusing the default store. The default store's contents are deliberately too thin to train a
   requirement predictor on, so the learning track carries its own consent and its own collection

@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -57,6 +59,8 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -79,7 +83,7 @@ jobs:
       # catch.
       - name: Assert every schema is discoverable
         run: |
-          python -c "from hermes_auto.gateway.schemas import load_schemas; s = load_schemas(); assert len(s) == 7, sorted(s)"
+          python -c "from hermes_auto.gateway.schemas import load_schemas, EXPECTED_SCHEMA_IDS as E; s = set(load_schemas()); assert s == set(E), sorted(s ^ set(E))"
 
   package:
     name: Wheel packaging
@@ -94,6 +98,8 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -121,7 +127,13 @@ jobs:
           python - <<'PY'
           import glob
           import os
+          import sys
           import zipfile
+
+          # Single source of truth: the same frozenset the runtime asserts against,
+          # read from the source tree so this step needs no install of its own.
+          sys.path.insert(0, "src")
+          from hermes_auto.gateway.schemas import EXPECTED_SCHEMA_IDS
 
           wheel_dir = os.environ["WHEEL_DIR"]
           wheels = sorted(glob.glob(os.path.join(wheel_dir, "*.whl")))
@@ -130,7 +142,7 @@ jobs:
           names = zipfile.ZipFile(wheels[0]).namelist()
           schemas = sorted(n for n in names if n.endswith(".schema.json"))
           print("\n".join(schemas))
-          assert len(schemas) == 7, schemas
+          assert len(schemas) == len(EXPECTED_SCHEMA_IDS), (schemas, sorted(EXPECTED_SCHEMA_IDS))
           assert "hermes_auto/py.typed" in names, sorted(names)
           PY
 
@@ -154,4 +166,4 @@ jobs:
           "$VENV_PY" -m pip install --upgrade pip
           "$VENV_PY" -m pip install "$WHEEL_DIR"/*.whl
           cd "$VENV_DIR"
-          "$VENV_PY" -c "from hermes_auto.gateway.schemas import load_schemas; s = load_schemas(); assert len(s) == 7, sorted(s); print(len(s), 'schemas loaded from the installed wheel')"
+          "$VENV_PY" -c "from hermes_auto.gateway.schemas import load_schemas, EXPECTED_SCHEMA_IDS as E; s = set(load_schemas()); assert s == set(E), sorted(s ^ set(E)); print(len(s), 'schemas loaded from the installed wheel')"

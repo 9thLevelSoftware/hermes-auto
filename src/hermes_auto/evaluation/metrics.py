@@ -43,12 +43,24 @@ invisible by construction: a recorder emitting float token counts that were
 coerced to zero would render a ``cached_token_ratio`` of ``0.000000`` in a
 report that passes every determinism check and is byte-identical on repeat.
 
-**No field is ever ``nan`` or ``inf``.** Every ratio and mean divides by a
-denominator that can legitimately be zero — a group of entirely failed turns has
-no successes, and a fully cached-free group has no input tokens. Each such
-expression yields ``0.0`` instead. ``f"{float('nan'):.6f}"`` renders the literal
-text ``nan``, which would defeat the byte-comparison that is this phase's
-reproducibility criterion.
+**No field is ever ``nan`` or ``inf``.** This has two halves, and only the
+first used to be true.
+
+*Division.* Every ratio and mean divides by a denominator that can legitimately
+be zero — a group of entirely failed turns has no successes, and a fully
+cache-free group has no input tokens. Each such expression yields ``0.0``
+instead. ``f"{float('nan'):.6f}"`` renders the literal text ``nan``, which would
+defeat the byte-comparison that is this phase's reproducibility criterion.
+
+*Input.* A non-finite value can also arrive from outside, and schema validation
+does not stop it: ``actual_cost_usd`` is ``type: number, minimum: 0``, and
+``minimum`` does not reject ``nan`` because ``nan < 0`` is ``False``. Such a
+value is raised by :func:`_as_measure`, not dropped — dropping an ``inf`` cost
+would produce a total that renders cleanly and is wrong, and a ``nan`` in a
+latency sample makes ``sorted()`` input-order-dependent, so the reported
+percentile would depend on the order the runs were read in. On the CLI path the
+``NaN``/``Infinity`` JSON literals never get this far; ``scripts/benchmark.py``
+rejects them at parse time.
 """
 
 from __future__ import annotations
@@ -228,6 +240,51 @@ def _as_count(value: object, field: str, event_id: str) -> int:
     return value
 
 
+def _as_measure(value: object, field: str, event_id: str) -> float | None:
+    """Return *value* as a finite measurement, or ``None`` when not reported.
+
+    The counterpart of :func:`_as_count` for the three fields that are genuinely
+    real-valued — ``actual_cost_usd``, ``ttft_ms``, and ``total_latency_ms``.
+
+    Args:
+        value: The raw value read from an outcome event.
+        field: Name of the event field, used in the error message.
+        event_id: ``event_id`` of the owning event, used in the error message.
+
+    Returns:
+        ``None`` when the measurement is absent, null, a bool, or not a number
+        at all — every one of which means *not reported*, never zero. Otherwise
+        the value as a :class:`float`.
+
+    Raises:
+        CorpusError: *value* is a number but is ``nan``, ``inf``, or ``-inf``.
+            ``scripts/benchmark.py`` rejects the ``NaN``/``Infinity`` JSON
+            literals at parse time, which covers every field at once for CLI
+            input; this covers the library path, where a caller building event
+            mappings in Python can produce a non-finite float with no JSON text
+            involved. Both are needed, because the schema cannot help: ``minimum:
+            0`` does not reject ``nan``, since ``nan < 0`` is ``False``.
+
+            Raised rather than dropped, for the same reason a bad count is: a
+            silently discarded ``inf`` cost yields a total that renders cleanly
+            and is wrong. A ``nan`` that reaches a latency sample is worse than
+            wrong — ``sorted()`` on a list containing one returns an
+            input-order-dependent ordering, so the percentile would depend on
+            the order the runs were read in, breaking the reproducibility
+            criterion outright.
+    """
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+
+    if not math.isfinite(value):
+        raise CorpusError(
+            f"event {event_id!r} has {field} {value!r}; a measurement must be a "
+            "finite number"
+        )
+
+    return float(value)
+
+
 def _sorted_entries(runs: list[dict]) -> list[tuple[str, dict]]:
     """Flatten *runs* into ``(task_id, event)`` pairs in a deterministic order.
 
@@ -258,8 +315,9 @@ def aggregate(runs: list[dict]) -> MetricSummary:
 
     Raises:
         CorpusError: An event carries a count field that is present but not a
-            non-negative whole number. Reported rather than coerced to zero;
-            see the module docstring.
+            non-negative whole number, or a measurement field that is present
+            but not finite. Reported rather than coerced to zero or dropped; see
+            the module docstring.
     """
     entries = _sorted_entries(runs)
 
@@ -292,19 +350,21 @@ def aggregate(runs: list[dict]) -> MetricSummary:
         # Unknown cost is counted, never valued at zero. `None` and an absent
         # key are both unknown: a missing measurement is not evidence of a free
         # turn.
-        cost = event.get("actual_cost_usd")
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            total_cost += float(cost)
-            known_cost_count += 1
-        else:
+        cost = _as_measure(event.get("actual_cost_usd"), "actual_cost_usd", event_id)
+        if cost is None:
             unknown_cost_count += 1
+        else:
+            total_cost += cost
+            known_cost_count += 1
 
-        ttft = event.get("ttft_ms")
-        if isinstance(ttft, (int, float)) and not isinstance(ttft, bool):
-            ttft_samples.append(float(ttft))
-        latency = event.get("total_latency_ms")
-        if isinstance(latency, (int, float)) and not isinstance(latency, bool):
-            latency_samples.append(float(latency))
+        ttft = _as_measure(event.get("ttft_ms"), "ttft_ms", event_id)
+        if ttft is not None:
+            ttft_samples.append(ttft)
+        latency = _as_measure(
+            event.get("total_latency_ms"), "total_latency_ms", event_id
+        )
+        if latency is not None:
+            latency_samples.append(latency)
 
         total_input_tokens += _as_count(
             event.get("input_tokens"), "input_tokens", event_id

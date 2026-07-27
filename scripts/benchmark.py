@@ -20,6 +20,11 @@ default because the aggregator's inputs are generated programmatically from
 Phase 8 onward, and an unvalidated count field of the wrong type is the kind of
 fault that produces a clean-looking report with a wrong number in it.
 
+The non-standard ``NaN``/``Infinity``/``-Infinity`` JSON literals are rejected at
+parse time, before validation, because the schema cannot catch them: ``minimum:
+0`` does not reject ``NaN``, since ``nan < 0`` is ``False``. See
+:func:`_reject_non_finite`.
+
 Two invocations with the same inputs produce byte-identical output, in any
 order, from any working directory. That is the phase's reproducibility
 criterion, and it is what lets a Phase 8 report be diffed against a Phase 1 one.
@@ -31,6 +36,7 @@ import argparse
 import json
 import pathlib
 import sys
+import typing
 
 # Allow running straight from a checkout without PYTHONPATH. Derived from
 # __file__, never from the working directory or an environment variable, so it
@@ -50,8 +56,8 @@ from hermes_auto.evaluation.baselines import (  # noqa: E402
 from hermes_auto.evaluation.corpus import CorpusError, load_corpus  # noqa: E402
 from hermes_auto.gateway.schemas import (  # noqa: E402
     SchemaLoadError,
+    build_registry,
     load_schemas,
-    validate,
 )
 
 #: ``$id`` of the schema every ``entry["event"]`` is checked against. Only the
@@ -61,6 +67,39 @@ from hermes_auto.gateway.schemas import (  # noqa: E402
 OUTCOME_EVENT_SCHEMA_ID = (
     "https://hermes-auto-router.dev/schema/routing/outcome-event.v1.json"
 )
+
+
+def _reject_non_finite(literal: str) -> typing.NoReturn:
+    """Reject the non-standard ``NaN``/``Infinity``/``-Infinity`` JSON literals.
+
+    ``json.load`` accepts all three by default, and nothing downstream stopped
+    them. The schema cannot: ``actual_cost_usd`` is ``type: number, minimum: 0``,
+    and ``minimum`` does not reject ``NaN`` because ``nan < 0`` evaluates
+    ``False``. A recording carrying the bare literal therefore validated cleanly
+    and rendered ``total_cost_usd: "nan"`` at exit 0 — falsifying the phase
+    constraint that no aggregate field is ever ``nan`` or ``inf``, and defeating
+    the byte-comparison that constraint exists to protect. A ``NaN`` reaching
+    ``latency_samples`` is worse still: ``sorted()`` on a list containing one is
+    input-order-dependent, so the percentile it yields depends on the order the
+    runs happened to be read in.
+
+    Hooked here, at parse time, rather than field by field, because one hook
+    covers every numeric field at once — including the ones a later revision of
+    ``outcome-event.v1`` adds, which a per-field guard would silently not cover.
+
+    Args:
+        literal: The offending token exactly as it appeared in the file, which
+            is what ``json`` passes to a ``parse_constant`` hook.
+
+    Raises:
+        CorpusError: Always. Named so the caller keeps its single "your input is
+            bad" exit path; the literal is quoted so an operator can grep the
+            file for it.
+    """
+    raise CorpusError(
+        f"contains the non-standard JSON literal {literal}; a recorded run must "
+        "carry only finite numbers"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -102,8 +141,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help=(
             "Skip validating each recorded event against outcome-event.v1. "
-            "Validation is on by default; this exists so a later phase can "
-            "profile aggregation without the schema pass in the measurement."
+            "Validation is on by default and costs well under a millisecond per "
+            "event; this exists so a later phase can profile aggregation with "
+            "the schema pass out of the measurement entirely, not because the "
+            "pass is expensive. It does not relax anything else: a NaN literal, "
+            "a negative count, and a structurally malformed run are still "
+            "rejected, because an opt-out must not turn a loud failure into a "
+            "silently wrong number."
         ),
     )
     return parser
@@ -117,8 +161,19 @@ def validate_events(runs: list[dict]) -> None:
     malformed recording at the boundary — before any number reaches an
     aggregate — rather than after it has been folded into a total.
 
-    Schemas are loaded once and reused across every event; :func:`validate`
-    re-reads the whole schema tree when it is not handed a mapping.
+    Schemas are loaded once and reused across every event; :func:`load_schemas`
+    re-reads the whole schema tree on each call. The **validator** is built once
+    too, which is the larger win by far: ``jsonschema.validate`` re-runs
+    ``check_schema`` and rebuilds the reference registry on *every* call, paying
+    per event for a result that cannot change between events. Measured over 1000
+    validations of a fixture event: 12,219 µs/event before, 247 µs/event after —
+    a ~50× reduction, or 1222 s against 25 s at the 100k events a later phase is
+    expected to aggregate.
+
+    ``check_schema`` still runs, once, below. Dropping it entirely would be
+    faster still and wrong: a malformed packaged schema would then surface as a
+    confusing per-event validation failure against a bad input file rather than
+    as ``jsonschema.SchemaError`` against the installation.
 
     Args:
         runs: Parsed recorded-run mappings, already shape-checked here.
@@ -136,20 +191,34 @@ def validate_events(runs: list[dict]) -> None:
     check_run_shapes(runs)
     schemas = load_schemas()
 
-    # Checked once, up front, rather than left to surface as a KeyError from
-    # validate() on the first event. A missing schema is a property of the
-    # installation, so discovering it per-event would be both repetitive and
-    # misattributed to whichever event happened to be validated first.
+    # Checked before the subscript below, so a missing schema surfaces as this
+    # module's declared error type rather than as a bare KeyError. A missing
+    # schema is a property of the installation, not of any one event, and the
+    # message says so.
     if OUTCOME_EVENT_SCHEMA_ID not in schemas:
         raise SchemaLoadError(
             f"the packaged schema tree does not carry "
             f"{OUTCOME_EVENT_SCHEMA_ID}; available: {sorted(schemas)}"
         )
 
+    # Built once, outside both loops — see the docstring for the measurement.
+    # The validator class is resolved from the schema's own `$schema` rather
+    # than hardcoded, so this stays exactly what jsonschema.validate() would
+    # have done, minus only the per-call work.
+    #
+    # NOTE: constructed locally rather than via a `build_validator` helper in
+    # hermes_auto.gateway.schemas, which did not exist at the time this was
+    # written. If that helper lands, this block collapses to a call to it; the
+    # registry construction is the only part duplicated from that module.
+    schema = schemas[OUTCOME_EVENT_SCHEMA_ID]
+    validator_class = jsonschema.validators.validator_for(schema)
+    validator_class.check_schema(schema)
+    validator = validator_class(schema, registry=build_registry(schemas))
+
     for index, run in enumerate(runs):
         for position, entry in enumerate(run.get("events", ())):
             try:
-                validate(entry["event"], OUTCOME_EVENT_SCHEMA_ID, schemas)
+                validator.validate(entry["event"])
             except jsonschema.ValidationError as exc:
                 path = "/".join(str(part) for part in exc.absolute_path) or "(root)"
                 raise CorpusError(
@@ -163,10 +232,11 @@ def main(argv: list[str] | None = None) -> int:
     """Render the report.
 
     Returns:
-        ``0`` on success and ``2`` on any bad input — an unreadable or invalid
-        corpus, an unreadable or unparseable run file, a structurally malformed
-        run, an event that fails ``outcome-event.v1``, an unknown strategy, or
-        an unknown ``task_id``. Exit ``2`` is the contract: an operator has to be
+        ``0`` on success and ``2`` on any bad input — an unreadable or unparseable
+        corpus, an unreadable or unparseable run file, a run carrying a ``NaN`` or
+        ``Infinity`` literal, a structurally malformed run, an event that fails
+        ``outcome-event.v1``, an unknown strategy, or an unknown ``task_id``.
+        Exit ``2`` is the contract: an operator has to be
         able to distinguish "your run file is malformed" from a crashed harness,
         and every one of these used to be reachable as an uncaught traceback.
     """
@@ -187,8 +257,12 @@ def main(argv: list[str] | None = None) -> int:
     for run_path in run_paths:
         try:
             with run_path.open(encoding="utf-8") as handle:
-                runs.append(json.load(handle))
-        except (OSError, json.JSONDecodeError) as exc:
+                # parse_constant fires before any value is stored, so a NaN or
+                # Infinity literal is rejected on every path — including
+                # --no-validate, which must not be a switch that converts a loud
+                # failure into a silently wrong number.
+                runs.append(json.load(handle, parse_constant=_reject_non_finite))
+        except (OSError, json.JSONDecodeError, CorpusError) as exc:
             print(f"benchmark: {run_path}: {exc}", file=sys.stderr)
             return 2
 

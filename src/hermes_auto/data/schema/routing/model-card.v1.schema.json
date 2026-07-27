@@ -2,15 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hermes-auto-router.dev/schema/routing/model-card.v1.json",
   "title": "Candidate model card (v1)",
-  "description": "A declarative, versioned description of one routing candidate (design.md §9.2, ADR-0003). A candidate is an execution identity, not a model ID: the same base model reached through two providers is two separate cards with two separate `id` values, because it may differ in latency, pricing, cache behavior, tool-call reliability, limits, and safety filtering (design.md §9.1). This schema describes the *curated model card* layer only. The six-level precedence chain (hard operator policy > live health > measured candidate statistics > curated model card > registry metadata > conservative unknown defaults) is a merge-time contract implemented in Phase 3, not a schema constraint (design.md §9.3, ADR-0003). Cards are untrusted input and must be schema-validated on load. A card never contains a credential value — only an environment-variable reference.",
+  "description": "A declarative, versioned description of one routing candidate (design.md §9.2, ADR-0003). A candidate is an execution identity, not a model ID: the same base model reached through two providers is two separate cards with two separate `id` values, because it may differ in latency, pricing, cache behavior, tool-call reliability, limits, and safety filtering (design.md §9.1). This schema describes the *curated model card* layer only. The six-level precedence chain (hard operator policy > live health > measured candidate statistics > curated model card > registry metadata > conservative unknown defaults) is a merge-time contract implemented in Phase 3, not a schema constraint (design.md §9.3, ADR-0003). Cards are untrusted input and must be schema-validated on load. `transport.credential_ref` is shaped to hold an environment-variable reference rather than a credential: the `^(env:[A-Z0-9_]+|none)$` pattern rejects every common secret format the project has checked (an `sk-` prefixed OpenAI key, a `ghp_` GitHub token, a JWT, a base64 blob) because each uses characters outside `[A-Z0-9_]`. It does not reject an all-uppercase-alphanumeric secret, which is shaped like an environment-variable name and is indistinguishable from one to a validator. Keeping credentials out of cards is therefore a loading-path invariant enforced by the Phase 3 card loader, for which this pattern is a strong first barrier and not a proof.",
   "type": "object",
   "required": ["id", "enabled", "transport", "capabilities", "limits"],
   "additionalProperties": false,
   "properties": {
     "id": {
       "type": "string",
-      "minLength": 1,
-      "description": "Stable candidate identifier. This is the value that appears in RouteDecision `ranked[].candidate`, `excluded[].candidate`, and `selected`, and in outcome-event `candidate`."
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)*$",
+      "description": "Stable candidate identifier. This is the value that appears in RouteDecision `ranked[].candidate`, `excluded[].candidate`, and `selected`, and in outcome-event `candidate`; the `maxLength` and `pattern` here are byte-identical to those four sites and a contract test asserts that, because a card that loads in Phase 3 with an id its consumers reject produces a decision record that cannot be written in Phase 4. The class permits `/`-separated segments so the aggregator convention the project targets — `openai/gpt-4o`, `anthropic/claude-sonnet-4` — is expressible without operators renaming their candidates. Leading, trailing, and doubled separators do not validate, but this is NOT a filesystem-safe token: `.` and `/` are both permitted, so `../` sequences are expressible and any consumer using a candidate id as a path component must sanitize it rather than trusting this pattern."
     },
     "enabled": {
       "type": "boolean",
@@ -45,7 +46,7 @@
         "credential_ref": {
           "type": "string",
           "pattern": "^(env:[A-Z0-9_]+|none)$",
-          "description": "Reference to the credential, never the credential itself. Only an environment-variable reference (`env:NAME`) or the literal `none` for an unauthenticated local endpoint validates. This pattern is the structural guarantee that a raw API key can never be written into a card and pass validation."
+          "description": "Reference to the credential, not the credential itself. Only an environment-variable reference (`env:NAME`) or the literal `none` for an unauthenticated local endpoint validates. The pattern is a strong barrier rather than a proof: it rejects every secret format carrying a lowercase letter, a hyphen, a dot, or a `+`/`/` — which covers `sk-…`, `ghp_…`, JWTs, and base64 — but an all-uppercase-alphanumeric secret is shaped exactly like an environment-variable name and no validator can tell the two apart. The Phase 3 card loader is what resolves `env:NAME` through the environment and therefore what makes a literal value useless even if one is written here."
         }
       }
     },
@@ -106,12 +107,14 @@
         "context_tokens": {
           "type": "integer",
           "minimum": 1,
-          "description": "Maximum total context window in tokens."
+          "maximum": 100000000,
+          "description": "Maximum total context window in tokens. The 1e8 ceiling is far above any announced context window and exists so an operator typo cannot declare a candidate eligible for every request, and so an arbitrary-precision integer is not an unbounded field."
         },
         "max_output_tokens": {
           "type": "integer",
           "minimum": 1,
-          "description": "Maximum output tokens per response."
+          "maximum": 100000000,
+          "description": "Maximum output tokens per response. Bounded for the same reason as `context_tokens`."
         },
         "tools": {
           "type": "boolean",
@@ -173,6 +176,7 @@
         "version": {
           "type": "integer",
           "minimum": 1,
+          "maximum": 1000000,
           "description": "Harness profile version. Part of candidate identity — it must increment when the harness changes."
         },
         "reasoning_policy": {
@@ -230,6 +234,7 @@
         "sample_count": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 100000000,
           "description": "Number of calibration samples behind these scores. 0 means the scores are unmeasured judgments."
         }
       }

@@ -20,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fail-closed Hermes compatibility probe `hermes_auto.compatibility`, pinning the supported Hermes
   range to `>=0.19,<1.0`
 - Two GitHub Actions workflows: a cross-platform test matrix with a schema-validation phase-close
-  gate, and nightly compatibility runs against the latest Hermes release and `main`
+  gate and a `package` job that asserts the built wheel carries all seven schemas plus `py.typed`
+  and then installs it into a clean virtualenv outside the repository and loads them from there —
+  the only gate that inspects the shipped artifact rather than the source tree — and nightly
+  compatibility runs against the latest Hermes release and `main`
 - STRIDE threat model covering all fourteen `design.md` §21 rows, with trust boundaries, assets,
   residual risk, and a per-phase review cadence
 - User-facing privacy and telemetry guide documenting the four storage prohibitions and per-phase

@@ -13,16 +13,23 @@ Eight properties are enforced:
 2. ``--runs`` argument order does not reach the output.
 3. The working directory does not reach the output.
 4. No aggregate is ever ``nan`` or ``inf``, including on a zero-success group.
-5. Unknown cost is counted, never valued at zero.
-6. A count that arrived as an integral float still aggregates as that number.
-7. A count that cannot be a count is raised, never coerced to zero.
-8. A structurally malformed run raises ``CorpusError``, not ``AttributeError``.
+5. A non-finite value arriving *in the input* is raised, never aggregated.
+6. Unknown cost is counted, never valued at zero.
+7. A count that arrived as an integral float still aggregates as that number.
+8. A count that cannot be a count is raised, never coerced to zero.
+9. A structurally malformed run raises ``CorpusError``, not ``AttributeError``.
 
-Properties 5 through 7 are the ones with teeth, and they fail the same way:
-quietly, in a report that renders cleanly and compares byte-identical. If 5
+Properties 4 and 5 are two halves of one constraint and only 4 used to hold: 4
+is about a ``nan`` this module could manufacture by dividing by zero, 5 about
+one handed to it. They need separate tests because the zero-success test in 4
+scans rendered output over a zero denominator and so can never observe an
+input-side ``nan``.
+
+Properties 5 through 8 are the ones with teeth, and they fail the same way:
+quietly, in a report that renders cleanly and compares byte-identical. If 6
 regressed, every later phase would treat an unpriced candidate as free and the
 design.md §15.4 "at least 20% cost reduction" gate would be measured against a
-fiction. If 6 or 7 regressed, ``cached_token_ratio`` — a headline claim of the
+fiction. If 7 or 8 regressed, ``cached_token_ratio`` — a headline claim of the
 project — would read exactly ``0.000000`` with nothing anywhere to say why.
 """
 
@@ -362,6 +369,50 @@ def test_unusable_count_is_raised_not_silently_zeroed(
     message = str(excinfo.value)
     assert field in message
     assert "evt_bad" in message
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("actual_cost_usd", float("nan")),
+        ("actual_cost_usd", float("inf")),
+        ("actual_cost_usd", float("-inf")),
+        ("ttft_ms", float("nan")),
+        ("total_latency_ms", float("inf")),
+    ],
+)
+def test_non_finite_measurement_is_raised_not_aggregated(
+    field: str, value: float
+) -> None:
+    """The library half of "no aggregate field is ever ``nan`` or ``inf``".
+
+    ``scripts/benchmark.py`` rejects the ``NaN``/``Infinity`` JSON literals at
+    parse time, which covers everything arriving as text. This covers a caller
+    that builds event mappings in Python and never goes through JSON at all.
+
+    Schema validation is not a substitute and never could be: ``actual_cost_usd``
+    is ``type: number, minimum: 0``, and ``minimum`` does not reject ``nan``
+    because ``nan < 0`` evaluates ``False``. A ``nan`` cost previously summed
+    straight into ``total_cost_usd`` and rendered as the literal text ``nan``.
+
+    Raised rather than dropped for two distinct reasons. A dropped ``inf`` cost
+    yields a total that is wrong but renders cleanly. A ``nan`` in a latency
+    sample is worse: ``sorted()`` on a list containing one returns an ordering
+    that depends on the input order, so the reported percentile would vary with
+    the order the runs happened to be read in — a direct breach of the
+    byte-identical criterion this module exists to enforce.
+    """
+    run = make_run(
+        "cheapest-only",
+        [("bug-fix-null-deref-01", make_event("evt_nonfinite", **{field: value}))],
+    )
+
+    with pytest.raises(CorpusError) as excinfo:
+        aggregate([run])
+
+    message = str(excinfo.value)
+    assert field in message
+    assert "evt_nonfinite" in message
 
 
 def test_absent_count_is_zero_not_an_error() -> None:

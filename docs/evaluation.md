@@ -111,7 +111,9 @@ strategy that is missing cannot be mistaken for a strategy that scored zero.
 ## Metrics
 
 Recorded runs are aggregated by `hermes_auto.evaluation.metrics.aggregate` into a
-`MetricSummary`. Each entry of a run's `events` array is exactly
+`MetricSummary` — or rejected: `aggregate` raises `CorpusError` on an event whose
+count field is present but unusable, rather than folding a bad value into a
+total. Each entry of a run's `events` array is exactly
 `{"task_id": "<corpus id>", "event": {…}}`; the inner object validates against
 `outcome-event.v1.schema.json`, which sets `additionalProperties: false` and
 defines no `task_id`, so the join key lives beside the event rather than inside
@@ -163,10 +165,47 @@ whenever `unknown_cost_count` is non-zero, `total_cost_usd` and
 between two strategies with different pricing coverage is not a like-for-like
 comparison. Report the count alongside the total, always.
 
-### No metric is ever `nan`
+### A present-but-unusable count aborts the run
 
-Every ratio and mean divides by a denominator that can legitimately be zero, and
-each returns `0.0` in that case:
+`aggregate` does not only produce a summary — it can also raise. An **absent**
+count field means *not reported* and contributes 0, which is correct: the schema
+makes every measurement optional because collection is best-effort. A count that
+is **present but unusable** is a different thing. Negative, boolean, non-integral,
+or not a number at all — none of those is a measurement of zero, so `aggregate`
+raises `CorpusError` naming the `event_id`, the field, and the value rather than
+coercing it. This covers the four integer count fields folded into totals:
+`invalid_tool_call_count`, `input_tokens`, `cached_tokens`, and
+`tool_call_count`. The three genuinely real-valued measurements —
+`actual_cost_usd`, `ttft_ms`, and `total_latency_ms` — are governed by the
+finiteness rule below instead, since for those an absent value means *unknown*
+rather than zero.
+
+The case a Phase 8 recorder author has to get right is the float. An **integral**
+float such as `4200.0` is accepted and narrowed to `int`, because any serializer
+that round-trips a counter through a JSON number produces one and it carries the
+measurement exactly. `4200.5` carries no whole-number measurement, so it raises.
+
+It is fair to ask why this needs handling in code at all when every recording is
+already schema-validated. Because JSON Schema's `integer` type matches **any**
+number with a zero fractional part: `4200.0` satisfies
+`{"type": "integer", "minimum": 0}` in `outcome-event.v1` and reaches the
+aggregator regardless of whether validation ran. Validation is not a substitute
+for this guard, and the guard is not redundant with validation — they catch
+different faults.
+
+The failure this prevents is invisible by construction. A recorder emitting float
+token counts that were silently coerced to zero would render a
+`cached_token_ratio` of `0.000000` in a report that passes every determinism
+check and compares byte-identical on repeat. Nothing in the output would reveal
+that the number was wrong.
+
+### No field is ever `nan` or `inf`
+
+This has two halves, because a non-finite value can be *produced* by the
+aggregation or *arrive* from the input, and they need different defenses.
+
+**Division.** Every ratio and mean divides by a denominator that can legitimately
+be zero, and each returns `0.0` in that case:
 
 | Field | Denominator | Value when the denominator is 0 |
 |---|---|---|
@@ -180,6 +219,29 @@ failed has zero successes. `f"{float('nan'):.6f}"` renders the literal text
 `nan`, which would render, print, and parse without complaint while silently
 defeating every byte-comparison downstream —
 `test_zero_success_group_renders_without_nan` exists to stop exactly that.
+
+**Input.** A non-finite value can also come in from outside, and schema
+validation does not stop it: `actual_cost_usd` is `type: number, minimum: 0`, and
+`minimum` does not reject `nan`, because `nan < 0` is `False`. This is defended
+at two levels.
+
+`scripts/benchmark.py` refuses the non-standard `NaN`, `Infinity`, and
+`-Infinity` JSON literals at parse time. Python's `json.load` accepts all three
+by default. Hooking the rejection at parse time covers every numeric field at
+once — including fields a later revision of `outcome-event.v1` may add, which a
+per-field guard would silently fail to cover — and it fires on every path,
+including `--no-validate`.
+
+For the library path, where a caller builds event mappings in Python and no JSON
+text is involved, `aggregate` raises `CorpusError` on a non-finite
+`actual_cost_usd`, `ttft_ms`, or `total_latency_ms`. It is raised rather than
+dropped for the same reason a bad count is: a silently discarded `inf` cost
+produces a total that renders cleanly and is wrong. A `nan` reaching a latency
+sample is worse than wrong — `sorted()` on a list containing one returns an
+input-order-dependent ordering, so the reported percentile would depend on the
+order the runs happened to be read in, breaking the reproducibility contract
+outright. `test_non_finite_measurement_is_raised_not_aggregated` and
+`test_non_finite_json_literal_exits_two` pin the two levels.
 
 ---
 
@@ -256,20 +318,81 @@ PYTHONPATH=src python scripts/benchmark.py --corpus tests/fixtures/baseline/corp
 cmp r1.json r2.json
 ```
 
-Confirming every recorded event conforms to the frozen outcome-event schema:
-
-```bash
-PYTHONPATH=src python -c "import json; from hermes_auto.gateway.schemas import validate; d=json.load(open('tests/fixtures/baseline/recorded-run-a.json')); [validate(e['event'], 'https://hermes-auto-router.dev/schema/routing/outcome-event.v1.json') for e in d['events']]"
-```
-
 The determinism suite:
 
 ```bash
 python -m pytest tests/performance -q
 ```
 
-`scripts/benchmark.py` exits `0` on success and `2` on a corpus or recorded-run
-error, with the message on stderr.
+### Schema validation is on by default
+
+`scripts/benchmark.py` validates **every** recorded event against
+`outcome-event.v1` before anything is aggregated. This needs no flag — it is the
+default, and there is no option to make it stricter. Only the inner
+`entry["event"]` is checked, never the entry that wraps it: the schema sets
+`additionalProperties: false` and defines no `task_id`, so the join key lives
+beside the event by necessity.
+
+The pass is default-on because from Phase 8 the aggregator's inputs are
+generated programmatically rather than written by hand, and an unvalidated count
+field of the wrong type is precisely the fault that yields a clean-looking report
+with a wrong number in it. A violation is raised as a `CorpusError` naming the
+run index, the entry position, the `task_id`, and the failing field path, and
+exits `2` before any number reaches an aggregate.
+
+Pass `--no-validate` to skip the pass:
+
+```bash
+PYTHONPATH=src python scripts/benchmark.py \
+  --corpus tests/fixtures/baseline/corpus.yaml \
+  --runs tests/fixtures/baseline/recorded-run-a.json \
+  --format json \
+  --no-validate
+```
+
+This is not a performance escape hatch. Validation costs well under a
+millisecond per event — the validator is built once and reused across every
+event rather than rebuilt per call — and the flag exists so a later phase can
+profile aggregation with the schema pass out of the measurement entirely, not
+because the pass is expensive.
+
+It also relaxes less than its name suggests, deliberately: an opt-out must not
+turn a loud failure into a silently wrong number.
+
+- **Still rejected** — a `NaN`, `Infinity`, or `-Infinity` JSON literal. These
+  are refused at *parse* time, on every path, before validation would have run.
+- **Still rejected** — a structurally malformed run, an unknown strategy, a
+  `task_id` absent from the corpus, and any count or measurement field that is
+  present but unusable. The `aggregate` invariants below apply regardless, so a
+  bad count is still caught, just later and with a different message.
+- **No longer checked** — whether each event conforms to `outcome-event.v1`.
+  And because the schema tree is loaded only by the validation pass,
+  `--no-validate` also skips the check that the installation carries
+  `outcome-event.v1` at all.
+
+For a valid recording the rendered output is byte-identical either way.
+
+You can run the same conformance check standalone, against a run file the
+harness is not otherwise consuming:
+
+```bash
+PYTHONPATH=src python -c "import json; from hermes_auto.gateway.schemas import validate; d=json.load(open('tests/fixtures/baseline/recorded-run-a.json')); [validate(e['event'], 'https://hermes-auto-router.dev/schema/routing/outcome-event.v1.json') for e in d['events']]"
+```
+
+### Exit codes
+
+`scripts/benchmark.py` exits `0` on success and `2` on failure, with the message
+on stderr. A single failure code keeps the "did it work" test simple, but `2`
+covers two situations that call for different responses, and the stderr prefix
+is what tells them apart:
+
+| Situation | stderr prefix | What to do |
+|---|---|---|
+| **Bad input** — unreadable or unparseable corpus, unreadable or unparseable run file, a run carrying a `NaN` or `Infinity` literal, structurally malformed run, an event that fails `outcome-event.v1`, an unknown strategy, or a `task_id` absent from the corpus | `benchmark:` | Fix the input. The message names the offending file, index, entry position, and field path. |
+| **Broken installation** — the packaged schema tree is unreadable, or does not carry `outcome-event.v1` | `benchmark: schema unavailable:` | Nothing is wrong with your run file. Reinstall the package. CI's `package` job exists to catch this before a wheel ships. |
+
+The second case is an installation fault, not bad data. Reading it as bad input
+sends you to re-examine a recording that is perfectly well formed.
 
 ---
 

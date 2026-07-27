@@ -384,6 +384,63 @@ def test_negative_count_is_rejected_even_with_no_validate(
     assert "cannot be negative" in capsys.readouterr().err
 
 
+def _run_text_with_cost_literal(literal: str) -> str:
+    """Return recorded-run JSON text whose ``actual_cost_usd`` is *literal*.
+
+    Assembled as text via a placeholder because ``json.dumps`` will not emit
+    ``Infinity`` for anything but an already-non-finite float, and because what
+    is under test is the exact bytes a recorder could plausibly write.
+    """
+    document = _run_with_event()
+    document["events"][0]["event"]["actual_cost_usd"] = "<literal>"
+    return json.dumps(document).replace('"<literal>"', literal)
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("extra", [(), ("--no-validate",)])
+def test_non_finite_json_literal_exits_two(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    literal: str,
+    extra: tuple[str, ...],
+) -> None:
+    """``NaN`` in a run file must never render as a report at exit 0.
+
+    ``json.load`` accepts the non-standard ``NaN``/``Infinity`` literals by
+    default, and the schema does not catch them: ``actual_cost_usd`` is
+    ``type: number, minimum: 0``, and ``minimum`` does not reject ``NaN`` because
+    ``nan < 0`` is ``False``. Before the parse-time hook this file produced, with
+    validation **on**, ``exit=0`` and ``total_cost_usd: "nan"`` — falsifying the
+    bolded phase constraint that no aggregate field is ever ``nan`` or ``inf``.
+
+    Note that ``test_zero_success_group_renders_without_nan`` passes either way:
+    it scans rendered output over a zero-denominator group, so it only ever sees
+    a ``nan`` manufactured by division, never one that arrived in the input.
+
+    Parametrized over ``--no-validate`` because the opt-out must not turn this
+    into a silently wrong number.
+    """
+    path = tmp_path / "nonfinite.json"
+    path.write_text(_run_text_with_cost_literal(literal), encoding="utf-8")
+
+    assert benchmark.main(_run_with(path, *extra)) == 2
+
+    err = capsys.readouterr().err
+    assert literal in err
+    assert "finite" in err
+
+
+def test_non_finite_renders_nothing_at_all(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The failure is total, not partial: no report escapes to stdout."""
+    path = tmp_path / "nan.json"
+    path.write_text(_run_text_with_cost_literal("NaN"), encoding="utf-8")
+
+    assert benchmark.main(_run_with(path, "--format", "json")) == 2
+    assert capsys.readouterr().out == ""
+
+
 def test_missing_schema_is_reported_not_traced(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

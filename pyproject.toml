@@ -12,6 +12,10 @@ dynamic = ["version"]
 dependencies = [
     "packaging>=23.0",
     "jsonschema>=4.20",
+    # Imported directly by hermes_auto.gateway.schemas (Registry, Resource,
+    # exceptions.Unresolvable). A jsonschema transitive dependency today, but
+    # relying on that leaves a direct import undeclared.
+    "referencing>=0.30",
     "pyyaml>=6.0",
 ]
 

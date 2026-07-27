@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hermes-auto-router.dev/schema/routing/route-decision.v1.json",
   "title": "RouteDecision explainability record (v1)",
-  "description": "The explainability record every route produces (design.md §12). It is derived only from router inputs, router scores, and router policy. It is never derived from hidden model reasoning, and the router must not expose or attempt to generate such reasoning. The record deliberately cannot round-trip the request: it carries no prompt text, no message content, no tool arguments, no tool results, and no credential values. Its contents are identifiers, numeric scores, machine-readable reason codes, and ONE bounded free-text channel — `excluded[].reasons[]`, capped at 200 characters per entry — which carries router-authored diagnostics such as `context window 65536 < required 84211` and is derived from limits, policy, or health, never from request content. Every identifier is value-constrained, not merely name-allowlisted: `root_session_hash` must match `^[0-9a-f]{64}$` (a fixed-width local-salt digest that structurally cannot hold a raw Hermes session id or prompt text, ADR-0004, design.md §13.1), `decision_id` is anchored at both ends, and `lane_id`, candidate ids, and `selected` are bounded identifier tokens. `selected` is not constrained to equal `ranked[0].candidate`, because a health veto (design.md §7.10) legitimately selects a lower-ranked candidate, and `ranked` may be empty when every candidate was hard-excluded, in which case `excluded` carries the explanation and `selected` is null.",
+  "description": "The explainability record every route produces (design.md §12). It is derived from router inputs, router scores, and router policy. It is not derived from hidden model reasoning, and the router must not expose or attempt to generate such reasoning. WHAT THIS SCHEMA BOUNDS, precisely: every string property is length-capped and character-class-constrained, and every numeric property has a finite range, so the record has a bounded maximum serialized size and no field accepts arbitrary bytes. `root_session_hash` accepts only a 64-character lowercase hex digest (a local-salt digest, ADR-0004, design.md §13.1); `decision_id` is anchored at both ends; `lane_id`, candidate ids, and `selected` are bounded identifier tokens; `model_card_version` and `router_version` are 64-character version tokens; `excluded[].reasons[]` is the widest channel at 200 characters per entry, at most 8 entries per exclusion and at most 64 exclusions. WHAT THIS SCHEMA DOES NOT BOUND: value constraints bound the SHAPE of what can be written, not the INTENT of what is written. A 200-character diagnostic field will hold 200 characters of prompt text; a 128-character identifier will hold a credential that happens to be alphanumeric; a bounded field repeated across many array entries aggregates. This schema therefore cannot and does not establish that the record carries no prompt text, no tool results, and no credential values. That exclusion is a WRITE-PATH INVARIANT: it is established by the Phase 8 code that constructs these records, which populates `reasons[]` from limits, policy, and health rather than from request content, and it is that code — not this file — that must be reviewed and tested for it. Phase 1 ships no write path, so nothing here is reachable today. `selected` is not constrained to equal `ranked[0].candidate`, because a health veto (design.md §7.10) legitimately selects a lower-ranked candidate, and `ranked` may be empty when every candidate was hard-excluded, in which case `excluded` carries the explanation and `selected` is null.",
   "type": "object",
   "required": [
     "decision_id",
@@ -21,13 +21,13 @@
   "properties": {
     "decision_id": {
       "type": "string",
-      "pattern": "^dec_[A-Za-z0-9]{1,64}$",
-      "description": "Opaque decision identifier, prefixed `dec_` (design.md §12). Anchored at BOTH ends: a prefix-only `^dec_` would have accepted `dec_` followed by an arbitrary payload."
+      "pattern": "^dec_[A-Za-z0-9_-]{1,64}$",
+      "description": "Opaque decision identifier, prefixed `dec_` (design.md §12). Anchored at BOTH ends and length-capped; a prefix-only `^dec_` would have accepted `dec_` followed by an arbitrary payload. The suffix class includes `_` and `-` so the obvious generators are usable: `\"dec_\" + str(uuid4())` and snake_case test ids both validate. Widening the class does not weaken the field — the anchoring and the 64-character cap are what bound it, not the exclusion of two punctuation characters."
     },
     "root_session_hash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "The root session identifier hashed with a local salt — never the raw Hermes session id (ADR-0004, design.md §13.1). The pattern is what makes that structural: only a 64-character lowercase hex digest validates, so a raw session id, a prompt, or a credential cannot be written here. The salt is local, so this value is not correlatable across machines."
+      "description": "The root session identifier hashed with a local salt, not the raw Hermes session id (ADR-0004, design.md §13.1). The pattern admits only a 64-character lowercase hex digest, so this field rejects a raw session id, a prompt, and any value containing a character outside `[0-9a-f]` — the tightest constraint in this schema, and one a fixed-width digest is genuinely equivalent to. It does not distinguish a correctly salted digest from any other 64 hex characters; that the value is in fact `sha256(salt + session_id)` is a property of the code that computes it. The salt is local, so digests are not correlatable across machines."
     },
     "lane_id": {
       "type": "string",
@@ -38,12 +38,14 @@
     "cache_epoch": {
       "type": "integer",
       "minimum": 0,
-      "description": "Cache epoch of the lane at decision time (design.md §6.4)."
+      "maximum": 2147483647,
+      "description": "Cache epoch of the lane at decision time (design.md §6.4). Capped at 2^31-1: JSON integers are arbitrary-precision, so an uncapped counter is an unbounded field, and no real lane approaches two billion cache epochs."
     },
     "turn_id": {
       "type": "integer",
       "minimum": 0,
-      "description": "User turn ordinal within the lane (design.md §6.3)."
+      "maximum": 2147483647,
+      "description": "User turn ordinal within the lane (design.md §6.3). Capped at 2^31-1 for the same reason as `cache_epoch`."
     },
     "mode": {
       "type": "string",
@@ -67,7 +69,8 @@
     },
     "excluded": {
       "type": "array",
-      "description": "Candidates removed by hard eligibility filters, policy, or veto (design.md §7.3, §7.10). Every entry carries at least one machine-readable reason, so no exclusion is ever unexplained. May be empty when nothing was excluded.",
+      "maxItems": 64,
+      "description": "Candidates removed by hard eligibility filters, policy, or veto (design.md §7.3, §7.10). Every entry carries at least one machine-readable reason, so no exclusion is unexplained. May be empty when nothing was excluded. `maxItems` 64 bounds the array against the candidate roster it describes — a decision cannot exclude more candidates than exist — and without it the per-entry caps below aggregate without limit.",
       "items": {
         "type": "object",
         "required": ["candidate", "reasons"],
@@ -76,13 +79,14 @@
           "candidate": {
             "type": "string",
             "maxLength": 128,
-            "pattern": "^[A-Za-z0-9_.:-]+$",
-            "description": "The `id` of the excluded candidate's model card."
+            "pattern": "^[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)*$",
+            "description": "The `id` of the excluded candidate's model card. `maxLength` and `pattern` are byte-identical to model-card.v1 `/properties/id`; a contract test asserts that, because a divergence makes a loadable card unwritable to a decision record."
           },
           "reasons": {
             "type": "array",
             "minItems": 1,
-            "description": "Non-empty list of exclusion reasons. Each is a router-authored diagnostic string derived from limits, policy, or health — never from request content. This is the only free-text channel in the record and it is deliberately bounded: `maxLength` 200 is comfortably above the design.md §12 example (`context window 65536 < required 84211`) and far below anything that could hold a prompt, a tool-result body, or a stack trace.",
+            "maxItems": 8,
+            "description": "Non-empty list of exclusion reasons. Each is intended to be a router-authored diagnostic derived from limits, policy, or health, such as the design.md §12 example `context window 65536 < required 84211`. This is the widest string channel in the record: at most 8 entries of at most 200 characters, so at most 1,600 characters per exclusion and, with `excluded`'s `maxItems`, at most 102,400 characters per record. Those caps bound SIZE. They do not make the field content-free — 200 characters is ample for a fragment of a prompt or an error body, and 512 such fragments reassemble. What keeps request content out is the Phase 8 code that populates these strings from limits, policy, and health objects rather than from the request; the caps are a size ceiling under that invariant, not a substitute for it.",
             "items": { "type": "string", "minLength": 1, "maxLength": 200 }
           }
         }
@@ -90,7 +94,8 @@
     },
     "ranked": {
       "type": "array",
-      "description": "Hard-eligible candidates ordered by final route loss, best first (design.md §7.8). May be empty when every candidate was hard-excluded; `excluded` then explains why and `selected` is null.",
+      "maxItems": 64,
+      "description": "Hard-eligible candidates ordered by final route loss, best first (design.md §7.8). May be empty when every candidate was hard-excluded; `excluded` then explains why and `selected` is null. `maxItems` 64 matches `excluded`: together they bound the record at the size of the candidate roster.",
       "items": {
         "type": "object",
         "required": ["candidate", "shortfall", "final_loss"],
@@ -99,8 +104,8 @@
           "candidate": {
             "type": "string",
             "maxLength": 128,
-            "pattern": "^[A-Za-z0-9_.:-]+$",
-            "description": "The `id` of the ranked candidate's model card."
+            "pattern": "^[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)*$",
+            "description": "The `id` of the ranked candidate's model card. `maxLength` and `pattern` are byte-identical to model-card.v1 `/properties/id`, asserted by a contract test."
           },
           "shortfall": {
             "type": "number",
@@ -119,7 +124,8 @@
           "estimated_ttft_ms": {
             "type": ["integer", "null"],
             "minimum": 0,
-            "description": "Estimated time to first token in milliseconds (design.md §7.6). Null when no estimate is available."
+            "maximum": 86400000,
+            "description": "Estimated time to first token in milliseconds (design.md §7.6). Null when no estimate is available. Capped at 24 hours — an estimate beyond that is a bug, not a slow provider."
           },
           "health": {
             "type": "number",
@@ -138,8 +144,8 @@
     "selected": {
       "type": ["string", "null"],
       "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_.:-]+$",
-      "description": "The `id` of the selected candidate, or null for a structured failure in which no hard-eligible candidate remained. `maxLength` and `pattern` apply only to the string branch; JSON Schema ignores both for null, so the null case stays representable. Deliberately NOT constrained to equal `ranked[0].candidate`: a health veto (design.md §7.10) selects a lower-ranked candidate and must remain representable."
+      "pattern": "^[A-Za-z0-9_.:-]+(/[A-Za-z0-9_.:-]+)*$",
+      "description": "The `id` of the selected candidate, or null for a structured failure in which no hard-eligible candidate remained. `maxLength` and `pattern` are byte-identical to model-card.v1 `/properties/id` and apply only to the string branch; JSON Schema ignores both for null, so the null case stays representable. Deliberately NOT constrained to equal `ranked[0].candidate`: a health veto (design.md §7.10) selects a lower-ranked candidate and must remain representable."
     },
     "reason_codes": {
       "type": "array",
@@ -167,12 +173,16 @@
     "model_card_version": {
       "type": "string",
       "minLength": 1,
-      "description": "The model-card snapshot version this decision was scored against, taken from the card `evidence.source_version` (ADR-0003, design.md §9.2). Present so a decision is replayable against the exact card set that produced it."
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:+-]+$",
+      "description": "The model-card snapshot version this decision was scored against, taken from the card `evidence.source_version` (ADR-0003, design.md §9.2). Present so a decision is replayable against the exact card set that produced it. The class covers semantic versions, dates, and PEP 440 local versions (`1.2.3+local.1`); `+` is included for that last form. Bounded because this and `router_version` were the two fully unconstrained strings in the record and a version token has no reason to exceed 64 characters."
     },
     "router_version": {
       "type": "string",
       "minLength": 1,
-      "description": "Version of the router that produced this decision, so a behavioral change can be attributed to a specific release."
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:+-]+$",
+      "description": "Version of the router that produced this decision, so a behavioral change can be attributed to a specific release. Same class and cap as `model_card_version`."
     }
   }
 }

@@ -16,8 +16,9 @@ stops them — read [`docs/threat-model.md`](threat-model.md).
 
 **What exists today.** The project is in Phase 1, which defines contracts and schemas. The local
 store itself is built in Phase 8. Until then the router stores nothing at all, because there is
-nothing to store into. This page describes the behavior the schemas already lock in, and marks each
-user control with the phase that delivers it. Phase numbers follow the project roadmap.
+nothing to store into. This page therefore separates two things throughout: what the shipped
+schemas already lock in, and what depends on code that arrives in a later phase. Each user control
+is marked with the phase that delivers it. Phase numbers follow the project roadmap.
 
 ---
 
@@ -63,51 +64,114 @@ but the record validates against the shipped schema exactly as written:
 Two schemas divide a routing record between them, and it is worth being precise about which holds
 what:
 
-- **`outcome-event.v1`** — the block above. Identifiers and measurements: what was routed, how long
-  it took, what it cost, whether it worked.
-- **`route-decision.v1`** — the companion explainability record. This is where the routing *scores*
-  live: the predicted capability requirement vector across eight named dimensions (`reasoning`,
+- **`outcome-event.v1`** — the block above. Identifiers and measurements of what actually
+  **happened**: what was routed, how long it took, what it really cost, whether it worked.
+- **`route-decision.v1`** — the companion explainability record, holding what the router
+  **predicted**: the capability requirement vector across eight named dimensions (`reasoning`,
   `code_generation`, `debugging`, `tool_orchestration`, `long_horizon_execution`,
-  `context_synthesis`, `structured_precision`, `multimodal_reasoning`), the ranked candidates, and
-  the reason codes drawn from a frozen twelve-value vocabulary — `CAPABILITY_FIT`, `COST_TIEBREAK`,
-  `STICKY_CACHE`, `HEALTH_VETO`, and eight others.
+  `context_synthesis`, `structured_precision`, `multimodal_reasoning`); the ranked candidates, each
+  carrying its `estimated_cost` and `estimated_ttft_ms`; and the reason codes drawn from a frozen
+  twelve-value vocabulary — `CAPABILITY_FIT`, `COST_TIEBREAK`, `STICKY_CACHE`, `HEALTH_VETO`, and
+  eight others.
 
-The two are joined by **`decision_id`**, so an outcome can be traced back to the reasoning that
-selected the model, and neither record carries your text at any point in that chain.
+So *estimated* cost and *estimated* time to first token live on the decision, and *actual* cost and
+*actual* latency live on the outcome. The two are joined by **`decision_id`**, which is what lets a
+prediction be scored against its result.
 
-Neither shape is a convention that a future contributor could quietly widen. Both are fixed by
-schemas delivered in Phase 1, and both set `additionalProperties: false`, so each schema
-**structurally rejects anything outside its own list** — a record containing a field the schema does
-not name fails validation and is not written.
+Neither shape is a convention a future contributor could quietly widen. Both schemas ship in Phase 1
+and both set `additionalProperties: false`, so each **rejects anything outside its own list** — a
+record containing a field the schema does not name fails validation and is not written. That is a
+real guarantee, and it is worth making concrete: if someone later added code that tried to write a
+`prompt` field into the store, the write would **fail validation rather than silently start
+collecting**. The constraint is enforced by the data format, not by a reviewer remembering it.
+
+It is just as important to be clear about the limit of that guarantee, because the rest of this page
+rests on it. **A schema bounds the shape of what can be written, not the intent behind it.** It
+fixes which fields exist and constrains each one to a type, a length, a character class, an enum, or
+a numeric range. It cannot inspect whether the value a field was handed is the value that field was
+meant to hold. `route-decision.v1` also carries one deliberate free-text field —
+`excluded[].reasons[]`, router-authored diagnostics such as `context window 65536 < required 84211`,
+capped at 200 characters per entry. That cap is far too small for a prompt, but note what it bounds:
+each individual string, not the total text a record accumulates, which also depends on how many
+exclusion entries the record carries. A per-entry limit is a weaker guarantee than it first reads
+as.
+
+The accurate summary is therefore a two-part one, and this page uses it throughout: **the schemas
+guarantee shape today; the Phase 8 write path is what will guarantee content.** Phase 1 ships no
+write path at all, so none of this is exploitable now — but any claim of the form "X can never be
+stored" is partly a claim about code that has not been written yet. Where that is the case below,
+this page says so and names the module that will carry the invariant.
 
 ---
 
 ## What the router never stores
 
-Four prohibitions. These are how the product behaves out of the box, with no configuration, and they
-are not settings you need to find and enable:
+Four prohibitions. These are hard defaults — how the product behaves out of the box, with no
+configuration — not settings you need to find and enable. For each one, this page states separately
+what the shipped schemas enforce and what the Phase 8 write path must enforce, because those are
+different guarantees with different maturity.
 
 1. **Raw prompt text is never stored.** Not truncated, not summarized, not hashed-and-kept. The
    router computes numeric features from your request, uses them to pick a model, and discards the
    text. What survives is a score, not a sentence.
+
+   *Enforced by the schemas today:* neither record defines a field for prompt text, and
+   `additionalProperties: false` means one cannot be added without a schema version bump. In
+   `outcome-event.v1` every string field is additionally value-constrained: `event_id`, `lane_id`
+   and `candidate` are bounded identifier tokens, `event_type` and `feedback` are enums,
+   `occurred_at` is an anchored timestamp pattern, `root_session_hash` a fixed-width digest, and
+   `error_class` a classification capped at 64 characters. None of them is a free-text channel.
+   What that buys is real but narrow: it means prompt text has nowhere obvious to go, not that the
+   schema has checked where each value came from.
+   *Left to Phase 8:* the write path itself. `telemetry/events.py` is where an event is built from a
+   live request, and it is the code that must compute features and drop the text. A schema can
+   refuse a field it does not know; it cannot verify that a bounded field was filled from a score
+   rather than from a sentence.
+
 2. **Tool-result bodies are never stored.** When a tool reads a file, runs a test, or searches your
    codebase, the router records that a tool call happened and whether it succeeded. The file
-   contents, the test output, and the search results are never stored.
+   contents, the test output, and the search results are not part of the record.
+
+   *Enforced by the schemas today:* `outcome-event.v1` carries `tool_call_count` and
+   `invalid_tool_call_count` as non-negative integers and defines no field for a tool name, a tool
+   argument, or a tool result. `error_class` is a short classification such as `rate_limit` or
+   `context_overflow`, capped at 64 characters, not a captured error body.
+   *Left to Phase 8:* nothing writes these counts yet, and the same write-path caveat applies.
+
 3. **Secrets and credential values are never stored.** Configuration refers to credentials by
-   environment-variable name — `env:OPENROUTER_API_KEY` names the variable; the key itself never
-   appears in a config file, a model card, a log line, or the store.
+   environment-variable name — `env:OPENROUTER_API_KEY` names the variable; the key itself is not
+   written to a config file, a model card, a log line, or the store.
+
+   *Enforced by the schemas today:* less than that sentence on its own suggests, and this is the
+   honest place to say so. No field is *for* a credential, and no field accepts free-form text of
+   credential length. But a credential has no distinguishable shape. A GitHub personal access token
+   is forty alphanumeric characters, which satisfies the length bound and identifier character class
+   on `event_id`, `lane_id`, and `candidate` exactly as comfortably as a real identifier does. The
+   schema cannot tell them apart, because "is this string a secret" is a question about where the
+   value came from, not about what it looks like.
+   *Left to Phase 8:* effectively all of this prohibition. It is a write-path invariant — those
+   fields are populated from router-internal identifiers, never from request content or environment
+   values — and it belongs to `telemetry/events.py`.
+
 4. **Session identifiers are hashed with a local salt.** The salt is generated on your machine and
    stays there, so a stored record cannot be linked back to a Hermes session id, and the same
-   conversation on two machines produces two unrelated hashes. What enforces this is a schema
-   pattern you can go and read: `root_session_hash` is constrained to `^[0-9a-f]{64}$` in both
-   `outcome-event.v1` and `route-decision.v1`. A fixed-width lowercase hex digest has no room to
-   carry a raw Hermes session id, a prompt, or a credential, so a future code path that tried to
-   write one there would fail validation rather than quietly re-enable cross-machine correlation.
+   conversation on two machines produces two unrelated hashes.
 
-The outcome-event schema sets `additionalProperties: false`. The practical effect is worth stating
-plainly: if someone later added code that tried to write a prompt field into the store, it would
-**fail validation rather than silently start collecting**. The prohibition is enforced by the data
-format, not by a reviewer remembering it.
+   *Enforced by the schemas today:* `root_session_hash` is constrained to `^[0-9a-f]{64}$` in both
+   `outcome-event.v1` and `route-decision.v1`. That pattern bounds the field to a fixed-width
+   lowercase hex digest, so a raw Hermes session id, a prompt, or a credential cannot be written
+   there — none of them fits the shape, and a code path that tried would fail validation.
+   *What the pattern does not do:* check that the digest was salted. An unsalted
+   `sha256(session_id)` is also sixty-four lowercase hex characters and validates identically. Such
+   a digest would be stable across every machine running the same session, and reversible by anyone
+   willing to enumerate the session-id space. The pattern enforces that the value *looks like* a
+   SHA-256; whether it *is* a salted SHA-256 is a different property, and no schema can see it.
+   *Left to Phase 8:* the salting itself. Generating a per-install salt, keeping it on the machine,
+   and applying it before the digest is written are all properties of the telemetry write path —
+   `telemetry/events.py` builds the record, `telemetry/sqlite.py` stores it — and they arrive with
+   Phase 8. **Phase 1 provides no structural backstop for them.** The tests that pin the invariant
+   land with that code: the same session id hashed under two different salts must produce two
+   different digests, and the raw id must never reach the field.
 
 ---
 
@@ -170,10 +234,12 @@ If you do turn it on, the supported exporter targets are:
 - Prometheus metrics
 - Team-hosted analytics
 
-Even with an exporter enabled, only **derived routing features, candidate identifiers, decisions,
-usage, and outcomes approved by policy** are exported. **Prompts and code are never exported**, for
-the straightforward reason that they were never stored in the first place — there is no code path
-that could send them, because there is no copy to send.
+Even with an exporter enabled, the policy is that only **derived routing features, candidate
+identifiers, decisions, usage, and outcomes approved by policy** may leave the machine. An exporter
+reads from the local store, so it can only ever emit what the store holds. That is why the storage
+prohibitions above are the load-bearing ones: **the export guarantee is exactly as strong as they
+are, and no stronger.** Both the exporters and the store arrive in Phase 8, and
+[`docs/threat-model.md`](threat-model.md) assigns this row to `telemetry/exporters.py`.
 
 **Availability:** exporters arrive in **Phase 8**. Until then no export mechanism exists in any form.
 
@@ -226,8 +292,11 @@ turn telemetry off" step to forget.
 - *Does installing this send anything to the project maintainers?* No. There is no default egress of
   any kind, and no exporter is enabled out of the box.
 - *If I route only to local models, does anything leave my machine?* No.
-- *Can I verify all this?* Yes — the store is a plain SQLite file you can open and inspect, and the
-  event schema that constrains it is in this repository.
+- *Can I verify all this?* Partly today, fully from Phase 8. What you can check right now is the
+  contract: both schemas are in this repository, and you can read exactly which fields exist and
+  what each one accepts. What you cannot check yet is the code that fills them, because it does not
+  exist — the store, and the write path that has to honor the prohibitions above, arrive in Phase 8.
+  From then on the store is a plain SQLite file you can open and inspect row by row.
 
 For the decision record behind this posture, see
 [`docs/adr/0004-local-telemetry-and-privacy.md`](adr/0004-local-telemetry-and-privacy.md). For the

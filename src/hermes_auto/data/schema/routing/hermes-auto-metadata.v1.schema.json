@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hermes-auto-router.dev/schema/routing/hermes-auto-metadata.v1.json",
   "title": "Hermes Auto routing metadata envelope (v1)",
-  "description": "The `_hermes_auto` object that the Hermes model-provider plugin injects into the request body via `build_extra_body()` (design.md §5.1). This is a private channel between the plugin and the local routing gateway: the gateway MUST strip the `_hermes_auto` key from the request body before sending the request upstream to any provider, so no upstream endpoint ever observes it. A `protocol_version` other than 1 MUST be rejected with an explicit protocol-mismatch error rather than best-effort parsed — a mismatched plugin and gateway disagree about the meaning of every other field, so silent tolerance would route on misread metadata. Unknown keys are likewise a version mismatch and fail validation, because this envelope is produced solely by the plugin and is never user-authored. This envelope carries routing identity only; it never carries prompt text, message content, tool arguments, tool results, or credential values.",
+  "description": "The `_hermes_auto` object that the Hermes model-provider plugin injects into the request body via `build_extra_body()` (design.md §5.1). This is a private channel between the plugin and the local routing gateway: the gateway MUST strip the `_hermes_auto` key from the request body before sending the request upstream to any provider, so no upstream endpoint ever observes it. A `protocol_version` other than 1 MUST be rejected with an explicit protocol-mismatch error rather than best-effort parsed — a mismatched plugin and gateway disagree about the meaning of every other field, so silent tolerance would route on misread metadata. Unknown keys are likewise a version mismatch and fail validation, because this envelope is produced solely by the plugin and is never user-authored. The property set is a closed allowlist and each string is length-capped, so the envelope has a bounded size and defines no field intended for prompt text, message content, tool arguments, tool results, or credentials. Unlike the routing records, the string values here are NOT character-class-constrained: `root_session_id`, `virtual_model`, and `plugin_version` are opaque values produced by the plugin whose formats this project does not own, so constraining their alphabets would reject legitimate traffic. That the plugin puts only routing identity in them is a property of the plugin, and the caps below bound how much of anything it can put there — 256 characters each — rather than establishing what it puts there. This envelope is also the one schema in the tree describing UNTRUSTED INBOUND data: the gateway must treat a validated envelope as well-formed, not as trustworthy, and must still hash `root_session_id` before it reaches any decision record or telemetry event.",
   "type": "object",
   "required": [
     "protocol_version",
@@ -20,20 +20,24 @@
     "root_session_id": {
       "type": "string",
       "minLength": 1,
+      "maxLength": 256,
       "description": "The stable Hermes root session identifier (design.md §6.1). Sent raw over loopback only; the router hashes it with a local salt before it reaches any decision record or telemetry event (ADR-0004)."
     },
     "virtual_model": {
       "type": "string",
       "minLength": 1,
+      "maxLength": 256,
       "description": "The virtual model the caller requested, e.g. `auto:balanced`, `auto:quality`, `auto:economy`, `auto:session`, or a configured auxiliary alias (design.md §5.1, §8.3)."
     },
     "plugin_version": {
       "type": "string",
       "minLength": 1,
+      "maxLength": 256,
       "description": "Version string of the provider plugin that produced this envelope, used for compatibility diagnostics."
     },
     "auxiliary_task": {
       "type": ["string", "null"],
+      "maxLength": 256,
       "description": "The auxiliary task alias when the call originates from a configured Hermes auxiliary entry — for example `compression`, `vision`, `title_generation`, or `web_extract` (design.md §8.3). Null or absent for a normal main-provider request."
     }
   }
