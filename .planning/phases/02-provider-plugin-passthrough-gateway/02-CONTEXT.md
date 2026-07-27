@@ -49,6 +49,20 @@ register_provider(openrouter)                # register the INSTANCE
 
 `design.md` §5.1 shows bare class attributes on the subclass and never instantiates. Following it literally does not register anything. Use the form above.
 
+**Sharpened by plan 02-05, which ran all three forms against real Hermes discovery.** "Does not
+register anything" is true of the literal snippet but understates the danger, because the *charitable*
+fix is worse than the original:
+
+| Form | What actually happens |
+|---|---|
+| §5.1 as printed (no `register_provider` call) | nothing registers — a loud, obvious failure |
+| `register_provider(HermesAutoProfile)` — passing the **class** | **registers successfully.** `get_provider_profile("hermes-auto")` returns it, `.name` reads `hermes-auto`, doctor and the model picker look healthy. Every method is then unbound: `TypeError: ProviderProfile.build_extra_body() missing 1 required positional argument: 'self'`. **Passes setup, fails at first inference.** |
+| `register_provider(HermesAutoProfile())` with bare class attributes | `TypeError: ProviderProfile.__init__() missing 1 required positional argument: 'name'` — bare class attributes populate no dataclass field |
+
+Only `register_provider(HermesAutoProfile(name="hermes-auto", ...))` — subclass for methods, instantiate
+with kwargs — is correct. All three failure modes are pinned as tests in
+`tests/unit/test_provider_profile.py`.
+
 ### 3. The control plugin must be enabled in Hermes config, or it never loads
 
 `hermes_cli/plugins.py:1453` — entry-point plugins are **opt-in via `plugins.enabled`**. `_get_enabled_plugins()` returns `None` when the key is absent, and `None` means nothing is enabled: the plugin is recorded with `error = "not enabled in config"` and its `register()` is never called.
