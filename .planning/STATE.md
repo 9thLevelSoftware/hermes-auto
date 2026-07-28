@@ -1,13 +1,13 @@
 # Project State
 
 ## Current Position
-- **Phase**: 2 of 11 (executing — wave 4 of 5 complete)
-- **Status**: Phase 2 wave 4 complete — 7/9 plans, 761 tests passing (was 206)
-- **Last Activity**: Phase 2 wave 4 execution (2026-07-27)
+- **Phase**: 2 of 11 (executed, pending review)
+- **Status**: Phase 2 complete — all 9 plans executed, 882 tests passing (was 206)
+- **Last Activity**: Phase 2 execution complete (2026-07-27)
 
 ## Progress
 ```
-[######··············] 27% — 14/52 plans complete
+[######··············] 31% — 16/52 plans complete
 ```
 
 ## Phase 1 Review
@@ -95,6 +95,35 @@ satisfied by the `import hmac` line alone — proved empirically that unsalted `
 passes it while being exactly the construction the plan forbids. Every one was run as written *and*
 replaced with a stronger check.
 
+## Phase 2 Results — all 9 plans executed
+**Tests 206 → 882 passing, 4 skipped.** 197 verification commands run across the phase, 186 passed;
+every failure was a plan defect the executing agent diagnosed and reported rather than worked around.
+
+**R5 is proven.** Byte-identity holds on all 12 SSE fixtures, direct vs gateway, against a real
+detached sidecar. The differential harness was proven able to go red by 16 injected corruptions.
+TTFT overhead p99 delta **4.143 ms — 1.37% of direct p99** against a 100 ms allowance.
+
+**The governing finding of this phase is my own verification quality.** ~45 of ~135 `> verification:`
+commands I wrote — **a third** — could pass while the work was wrong. The method that found them
+matured over the phase: by Wave 3 agents were constructing a deliberately wrong implementation and
+running the checks against it. 02-06's decoy module (auth as `==`, no routes, docstring mentioning the
+right words) passed **five** of its checks. 02-07's evaded greps via `import_module("ps"+"util")` and
+passed **all five** of that task's. Three separate plans hit the *inverse* failure — an `X not in src`
+check firing on the docstring that documents the exclusion. Two checks could not pass in principle
+(`assert 'hermes_auto' not in SHIM_SOURCE` where the protocol key is literally `_hermes_auto`), and one
+could not fail in principle (`print([...] or 'complete')`).
+
+**Bugs found in code, not plans**: Starlette's `StreamingResponse` never closes its `body_iterator`, so
+a client hangup left an httpx stream open — an abandoned generation still billing on a paid endpoint.
+`stop()` polling prevented the shutdown it waited for (13.4 s → 0.12 s). `ingress.py` failed open
+because `compare_digest(b"", b"")` is `True`. `telemetry/redaction.py` spawned `icacls` without
+`CREATE_NO_WINDOW`, flashing a console window on every salt mint.
+
+**Two of my briefings were wrong and were corrected with evidence**: Hermes *is* an installed
+distribution (`import providers` succeeds from any cwd), so no dedicated e2e venv is needed; and
+following `design.md` §5.1's *charitable* fix registers the provider class successfully, then fails at
+first inference — worse than the "registers nothing" I had recorded.
+
 ## Open Items — raised by Phase 1 execution
 - **Phase 2**: no error-envelope schema exists. `wire/openai-error.v1.schema.json` is needed — context errors return the OpenAI error body, a different shape from `chat.completion`, currently unvalidated.
 - **Phase 2**: `pytest-asyncio` resolved to 1.4.0, which no longer defaults to a usable mode. Needs `asyncio_mode` in `[tool.pytest.ini_options]` or explicit markers before the first async test.
@@ -120,7 +149,7 @@ replaced with a stronger check.
 - ~~Pin the `design.md` revision~~ — blob `18bb54b36485fa0813ec67f84a74628a9eee3aae` at commit `331a69d`, recorded in `01-CONTEXT.md` with a verification command
 
 ## Next Action
-Wave 5 of Phase 2 in progress (plans 02-08 differential harness, 02-09 live smoke)
+Run `/legion:review` to verify Phase 2: Provider Plugin & Passthrough Gateway
 
 ## Open Items — raised by Phase 2 Wave 1
 - ~~**Wave 2 blocker**: starlette 1.3.1 vs the 0.3x API the plan assumed~~ — **RESOLVED.** Two real deltas found by reading the installed source: `Starlette.__init__` takes only `lifespan` (no `on_startup`/`on_shutdown`), and `uvicorn 0.51`'s `capture_signals()` nests, so `main.py` subclasses `Server` for the admin listener.
@@ -182,3 +211,31 @@ Wave 5 of Phase 2 in progress (plans 02-08 differential harness, 02-09 live smok
   are less distinguishable than the supervision contract implies.
 - **Phases 3/4/8/11**: `design.md` §4.2's six other `/auto` commands are deliberately unregistered; the
   phases that deliver them are named in `admin.py`'s 501 bodies. `hermes auto explain --last` likewise.
+
+## Open Items — raised by Phase 2 Wave 5 (for review)
+- **SCHEMA DEFECT, unfixed by design**: `openai-error.v1` types `code` as `["string","null"]`, but some
+  OpenAI-compatible relays emit an integer `code` (an HTTP status). The schema's own description calls
+  itself a relay schema whose closure "would reject traffic the gateway is required to pass through" —
+  and this is exactly that closure on a named field. **Recommend widening to
+  `["string","integer","null"]`.** Deliberately left for review rather than fixed by the orchestrator:
+  it changes a wire contract, and 02-08's `test_an_integer_error_code_fails_the_schema_but_not_the_relay`
+  is a labelled tripwire that must be deleted in the same change.
+- **ROADMAP criterion 5 is NOT met**: 3 of 5 live surfaces exercised (CLI, TUI fully; cron partly).
+  Messaging gateway needs third-party credentials; desktop is Electron and needs a Node e2e job — though
+  its Python backend *is* the `tui_gateway` dispatcher the TUI test drives, so only the renderer is
+  uncovered. Recommended amendment recorded in `02-09-SUMMARY.md`. Both gaps are resourcing, not
+  capability.
+- **The SSE fixture corpus is streaming-only.** Cron's recorded body has no `stream` key and the SDK
+  then fails with `vars() argument must have __dict__ attribute`; the TUI's auxiliary calls are also
+  non-streaming. **This limits 02-08's differential proof** — it cannot cover the non-streaming path.
+  A non-streaming `application/json` fixture belongs to 02-03's corpus.
+- **The sidecar log is nearly empty** — `main.py` sets `access_log=False`, so a completed conversation
+  leaves 248 bytes of uvicorn startup lines. Criterion 7 (no raw prompt in logs) passes with almost
+  nothing to bite on, and operationally there is **no request trace at all** for diagnosis.
+- **02-08's TTFT p99 gate is load-sensitive** — 0.40 s under concurrent load, 4-6 ms quiet. Skipped
+  under `CI`, and contaminated runs now report invalid rather than failing, but it will flake on a
+  shared runner.
+- **Stale-PID question**: two orphaned sidecars from 17:38 were found with **no `runtime.json`** in the
+  state directory, so `hermes auto stop` had nothing to reap them by. Manually killed. Either a crash
+  path clears the runtime file before the process exits, or a test spawned a gateway outside the
+  supervisor. Criterion 6's mid-session restart is separately proven; this is a different path.
