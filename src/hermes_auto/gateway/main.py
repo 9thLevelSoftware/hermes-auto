@@ -47,7 +47,14 @@ import uvicorn
 
 from ..config import AutoRouterConfig, ConfigError, load_config
 from ..state.paths import state_dir as resolve_state_dir
-from ..state.runtime import RuntimeFile, clear_runtime, new_instance_id, write_runtime
+from ..state.runtime import (
+    RuntimeFile,
+    RuntimeFileError,
+    clear_runtime,
+    new_instance_id,
+    read_runtime,
+    write_runtime,
+)
 from ..telemetry.redaction import get_logger
 from .app import create_app
 
@@ -216,6 +223,57 @@ def _build_admin_app(config: AutoRouterConfig, logger: Any) -> Any | None:
         return create_admin_app()
 
 
+def _clear_own_runtime(
+    configured: str | os.PathLike[str] | None,
+    instance_id: str,
+    logger: Any,
+) -> None:
+    """Retract the advertisement, but only while it still names *this* process.
+
+    ``clear_runtime`` unlinks whatever happens to be at the path. That is only
+    safe for a process that can show the advertisement is its own, and two
+    guards together establish that. This function is the second; the first is
+    ``published`` in :func:`serve`, which decides whether this is called at all.
+
+    Both are load-bearing, and the first one is the observed incident. A second
+    gateway whose inference port was free but whose *admin* port collided failed
+    at ``bind_socket`` -- **inside** ``serve()``'s ``try``, unlike the inference
+    bind above it -- and its ``finally`` deleted the runtime file of the healthy
+    gateway already serving on that admin port. That gateway kept answering with
+    nothing on disk naming it: ``status`` reported ``not_started`` and ``stop``
+    had nothing to reap it by, so it had to be killed by hand after three hours.
+
+    The identity compare closes what ``published`` alone leaves open: between
+    this process writing its file and reaching here, a replacement may already
+    have published its own, and unlinking that one recreates the same orphan by
+    a different route. Read-compare-unlink is not atomic -- POSIX and Windows
+    offer no portable compare-and-unlink -- so this narrows the window from the
+    whole process lifetime to a single file read rather than closing it. Stated
+    rather than claimed closed, the same way ``supervisor.stop`` states the
+    residual window on its own identity re-check.
+    """
+    try:
+        current = read_runtime(configured)
+    except RuntimeFileError:
+        # Present but unparseable. Deliberately left alone for the same reason
+        # `status` leaves it: something wrote nonsense there and deleting the
+        # evidence is how that bug survives.
+        return
+    if current is None:
+        return
+    if current.instance_id != instance_id:
+        logger.info(
+            {
+                "event": "gateway.runtime_file.not_ours",
+                "instance_id": instance_id,
+                "file_instance_id": current.instance_id,
+                "consequence": "left in place; it advertises a different process",
+            }
+        )
+        return
+    clear_runtime(configured)
+
+
 async def serve(
     config: AutoRouterConfig,
     *,
@@ -232,6 +290,12 @@ async def serve(
     admin_socket: socket.socket | None = None
     servers: list[uvicorn.Server] = []
     sockets: list[socket.socket] = [inference_socket]
+
+    #: Whether *this* process ever advertised itself. The ``finally`` below may
+    #: run without a single line of the block having succeeded -- the admin bind
+    #: raises from inside it -- and a process that never published must never
+    #: retract. See :func:`_clear_own_runtime`.
+    published = False
 
     try:
         admin_app = _build_admin_app(config, logger)
@@ -255,6 +319,7 @@ async def serve(
             ),
             config.gateway.state_dir,
         )
+        published = True
         logger.info(
             {
                 "event": "gateway.bound",
@@ -284,13 +349,22 @@ async def serve(
         for sock in sockets:
             with contextlib.suppress(OSError):
                 sock.close()
-        # Remove our own advertisement. Idempotent, and it runs on the crash
-        # path too: a runtime file outliving its process is what makes `status`
-        # report a gateway that is not there.
-        with contextlib.suppress(Exception):
-            clear_runtime(config.gateway.state_dir)
+        # Remove our own advertisement -- *ours*, and only if we made one. It
+        # runs on the crash path too: a runtime file outliving its process is
+        # what makes `status` report a gateway that is not there. The converse,
+        # a process outliving its runtime file, is what makes `stop` unable to
+        # reap a gateway that *is* there, and is why this is guarded twice.
+        if published:
+            with contextlib.suppress(Exception):
+                _clear_own_runtime(
+                    config.gateway.state_dir, resolved_instance_id, logger
+                )
         logger.info(
-            {"event": "gateway.exited", "instance_id": resolved_instance_id}
+            {
+                "event": "gateway.exited",
+                "instance_id": resolved_instance_id,
+                "published": published,
+            }
         )
 
     return 0

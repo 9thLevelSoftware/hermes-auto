@@ -1209,34 +1209,236 @@ def test_admin_main_pins_the_loopback_constant() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_admin_module_logs_no_banned_key_and_no_credential() -> None:
-    """Every logging call's payload keys, checked against the redaction sink.
+#: Every module in this project that holds a logger. Scanning only
+#: ``gateway.admin`` -- which is all this check used to do -- leaves the other
+#: ten unexamined, and ``gateway/app.py`` is where a request payload is actually
+#: in scope.
+LOGGING_MODULES = (
+    "hermes_auto.commands",
+    "hermes_auto.gateway.admin",
+    "hermes_auto.gateway.admin_main",
+    "hermes_auto.gateway.app",
+    "hermes_auto.gateway.errors",
+    "hermes_auto.gateway.ingress",
+    "hermes_auto.gateway.main",
+    "hermes_auto.gateway.relay",
+    "hermes_auto.gateway.upstream",
+    "hermes_auto.health.probe",
+    "hermes_auto.plugin",
+    "hermes_auto.supervisor",
+)
+
+#: Logger method names whose arguments are a log payload.
+LOGGING_METHODS = frozenset(
+    {"debug", "info", "warning", "error", "exception", "critical", "log"}
+)
+
+#: Near-miss spellings of a credential. ``BANNED_KEYS`` matches by exact name and
+#: says so deliberately -- a substring rule on ``token`` would delete the
+#: ``prompt_tokens`` counts the router legitimately keeps. The consequence is
+#: that ``BANNED_KEYS`` alone does not cover a payload key spelled ``bearer``,
+#: and it covers no *value* at all.
+CREDENTIALISH_NAMES = frozenset(
+    {"bearer", "credential", "credentials", "apikey", "password", "passwd"}
+)
+
+#: Suffixes that make an identifier a credential whatever it is prefixed with:
+#: ``admin_token``, ``_credential``, ``read_token()``, ``mint_admin_token()``.
+CREDENTIALISH_SUFFIXES = (
+    "_token",
+    "_secret",
+    "_credential",
+    "_credentials",
+    "_api_key",
+    "_apikey",
+    "_password",
+)
+
+
+#: Builtins whose return is a number derived from their argument, not the
+#: argument. ``{"response_bytes": len(content)}`` is a byte count and
+#: ``docs/privacy.md`` lists exactly these derived counts among what the router
+#: legitimately keeps, so the scan stops at the call rather than descending into
+#: it. ``str``, ``repr`` and ``format`` are deliberately absent: they preserve
+#: the value, so ``str(app.state.token)`` must stay visible.
+#:
+#: The cost of the carve-out is that ``len(app.state.token)`` would pass. A
+#: length is not a credential, and the alternative is a check that fires on
+#: correct code -- which is a check that gets deleted.
+DERIVED_SCALAR_CALLS = frozenset({"len", "sum", "int", "float", "bool", "round", "abs"})
+
+
+def _is_credentialish(name: str) -> bool:
+    """Is *name* an identifier that holds, or returns, a live credential?"""
+    from hermes_auto.telemetry.redaction import BANNED_KEYS
+
+    folded = name.casefold()
+    if folded in BANNED_KEYS or folded in CREDENTIALISH_NAMES:
+        return True
+    return folded.endswith(CREDENTIALISH_SUFFIXES)
+
+
+def _value_identifiers(node: Any) -> Any:
+    """Yield every identifier a value expression reads, minus derived counts."""
+    import ast
+
+    if isinstance(node, ast.Call):
+        callee = node.func
+        named = (
+            callee.id
+            if isinstance(callee, ast.Name)
+            else callee.attr
+            if isinstance(callee, ast.Attribute)
+            else None
+        )
+        if named in DERIVED_SCALAR_CALLS:
+            yield from _value_identifiers(callee)
+            return
+
+    if isinstance(node, ast.Name):
+        yield node.id
+    elif isinstance(node, ast.Attribute):
+        yield node.attr
+
+    for child in ast.iter_child_nodes(node):
+        yield from _value_identifiers(child)
+
+
+def _scan_logging_calls(source: str, where: str) -> tuple[set[str], list[str]]:
+    """Return every payload key and every credential-valued expression in *source*.
 
     An AST walk rather than a substring scan: ``'token' not in source`` is false
     for a module that legitimately says ``read_admin_token``, and a scan loose
     enough to pass would be too loose to catch anything.
+
+    Two separate answers, because they catch different mutations. The *keys* set
+    catches a payload that names a banned field. The *values* list catches a
+    payload that carries a credential under a key nobody thought to ban --
+    ``{"bearer": app.state.token}`` is the one a reviewer actually planted, and
+    a key-name check cannot see it because ``bearer`` is not a banned key.
     """
     import ast
-    import inspect
 
-    import hermes_auto.gateway.admin as module
-    from hermes_auto.telemetry.redaction import BANNED_KEYS
+    keys: set[str] = set()
+    credential_values: list[str] = []
 
-    tree = ast.parse(inspect.getsource(module))
-    logged_keys: set[str] = set()
-    for node in ast.walk(tree):
+    for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
-        if node.func.attr not in {"debug", "info", "warning", "error", "exception"}:
+        if node.func.attr not in LOGGING_METHODS:
             continue
-        for argument in node.args:
-            if isinstance(argument, ast.Dict):
-                for key in argument.keys:
-                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                        logged_keys.add(key.value.casefold())
 
-    assert logged_keys, "no structured logging calls found; the walk is broken"
-    assert logged_keys & BANNED_KEYS == set(), sorted(logged_keys & BANNED_KEYS)
+        payloads = [*node.args, *(keyword.value for keyword in node.keywords)]
+        for payload in payloads:
+            if not isinstance(payload, ast.Dict):
+                continue
+            for key, value in zip(payload.keys, payload.values):
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    keys.add(key.value.casefold())
+
+                # The whole value subtree, so `str(app.state.token)` and
+                # `f"{read_token(d)}"` are as visible as a bare reference.
+                for found in _value_identifiers(value):
+                    if _is_credentialish(found):
+                        rendered = (
+                            key.value if isinstance(key, ast.Constant) else "<**>"
+                        )
+                        credential_values.append(
+                            f"{where}:{node.lineno} key={rendered!r} value={found}"
+                        )
+
+    return keys, credential_values
+
+
+#: The mutation a reviewer planted in a gateway log payload, which the previous
+#: key-only check passed with the entire suite green.
+CANARY_LOG_PAYLOAD = '''
+def relay(app, logger, state_dir):
+    logger.info(
+        {
+            "event": "relay.complete",
+            "bearer": app.state.token,
+            "user_prompt": "TOP-SECRET",
+        }
+    )
+    logger.info({"event": "x", "who": read_token(state_dir)})
+    logger.warning({"event": "y", "detail": self._credential})
+    logger.info({"event": "clean", "response_bytes": len(content), "port": port})
+'''
+
+
+def test_the_log_payload_scanner_catches_the_mutation_it_exists_for() -> None:
+    """Prove the scanner works before trusting it to report nothing.
+
+    A structural test that silently stops matching is worse than no test, and
+    this one has three ways to stop matching: the method-name set, the ``ast.Dict``
+    shape, and the value walk. All three are exercised here against source that
+    is known to be dirty.
+
+    The first two assertions are the finding restated: neither ``bearer`` nor
+    ``user_prompt`` is a banned key, so the key check -- the only check that used
+    to exist -- passes on this payload.
+    """
+    from hermes_auto.telemetry.redaction import BANNED_KEYS
+
+    keys, credential_values = _scan_logging_calls(CANARY_LOG_PAYLOAD, "<canary>")
+
+    assert "bearer" not in BANNED_KEYS
+    assert "user_prompt" not in BANNED_KEYS
+    assert keys & BANNED_KEYS == set(), (
+        "the canary is supposed to be invisible to the key check; if this fires "
+        "the canary no longer reproduces the finding"
+    )
+
+    assert len(credential_values) == 3, credential_values
+    joined = " ".join(credential_values)
+    assert "value=token" in joined, "missed app.state.token"
+    assert "value=read_token" in joined, "missed a read_token() return"
+    assert "value=_credential" in joined, "missed a _credential attribute"
+
+    # The carve-out, pinned from the other side: a derived count is not a leak,
+    # and a scanner that flags `len(content)` is one that gets deleted for
+    # crying wolf on correct code.
+    assert "clean" not in joined, joined
+
+
+def test_no_module_logs_a_banned_key_or_a_credential() -> None:
+    """Every logging call in the project, keys and values both.
+
+    Plan 02-04 checked this across all seven gateway modules by hand and shipped
+    no test, so the property held once and was unenforced afterwards. This is
+    that check, executed.
+    """
+    import importlib
+    import inspect
+
+    from hermes_auto.telemetry.redaction import BANNED_KEYS
+
+    all_keys: set[str] = set()
+    all_credential_values: list[str] = []
+    modules_with_logging: list[str] = []
+
+    for name in LOGGING_MODULES:
+        module = importlib.import_module(name)
+        keys, credential_values = _scan_logging_calls(inspect.getsource(module), name)
+        if keys:
+            modules_with_logging.append(name)
+        all_keys |= keys
+        all_credential_values += credential_values
+
+    # Two self-checks. The first is the original: a walk that matches nothing
+    # reports a clean project indistinguishably from a broken parser. The second
+    # pins the module list, so deleting an entry to silence a finding is a
+    # visible edit rather than a quiet narrowing of scope.
+    assert all_keys, "no structured logging calls found; the walk is broken"
+    assert len(LOGGING_MODULES) == 12, sorted(LOGGING_MODULES)
+    assert "hermes_auto.gateway.app" in modules_with_logging, (
+        "gateway/app.py is the module that handles request payloads; a scan "
+        "that finds no logging call in it is not scanning it"
+    )
+
+    assert all_keys & BANNED_KEYS == set(), sorted(all_keys & BANNED_KEYS)
+    assert all_credential_values == [], all_credential_values
 
 
 def test_the_denied_log_record_carries_no_authorization_header(

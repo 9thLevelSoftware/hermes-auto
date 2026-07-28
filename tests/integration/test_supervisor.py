@@ -22,8 +22,11 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import os
 import pathlib
 import socket
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -64,13 +67,20 @@ class Harness:
         return f"http://127.0.0.1:{port}"
 
 
-def _write_config(path: pathlib.Path, upstream_url: str) -> None:
+def _write_config(
+    path: pathlib.Path,
+    upstream_url: str,
+    *,
+    url: str = "http://127.0.0.1:0",
+    port: int = 0,
+    admin_port: int = 0,
+) -> None:
     path.write_text(
         "auto_router:\n"
         "  gateway:\n"
-        '    url: "http://127.0.0.1:0"\n'
-        "    port: 0\n"
-        "    admin_port: 0\n"
+        f'    url: "{url}"\n'
+        f"    port: {port}\n"
+        f"    admin_port: {admin_port}\n"
         f"    startup_timeout_seconds: {int(STARTUP_TIMEOUT)}\n"
         "  upstream:\n"
         f'    base_url: "{upstream_url}/v1"\n'
@@ -78,6 +88,54 @@ def _write_config(path: pathlib.Path, upstream_url: str) -> None:
         '    credential_ref: "none"\n',
         encoding="utf-8",
     )
+
+
+#: Windows-only: keeps a spawned sidecar from flashing a console window at the
+#: developer running the suite. 0 on POSIX, where subprocess rejects any other
+#: value for this argument.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _spawn_gateway(
+    config_path: pathlib.Path, log_path: pathlib.Path
+) -> subprocess.Popen[bytes]:
+    """Run ``python -m hermes_auto.gateway.main`` directly, holding the handle.
+
+    Deliberately not ``supervisor.start``: these tests need a live gateway that
+    supervision has *not* been asked to track, and they need a handle they can
+    kill unconditionally in teardown so a failing assertion cannot leave a
+    detached sidecar holding a port -- the exact incident being fixed.
+    """
+    environment = dict(os.environ)
+    environment["HERMES_AUTO_CONFIG"] = str(config_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    stream = open(log_path, "ab", buffering=0)
+    try:
+        return subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, "-m", supervisor.GATEWAY_MODULE],
+            stdin=subprocess.DEVNULL,
+            stdout=stream,
+            stderr=stream,
+            env=environment,
+            creationflags=_NO_WINDOW,
+        )
+    finally:
+        stream.close()
+
+
+def _await_runtime_file(process: subprocess.Popen[bytes]) -> RuntimeFile:
+    """Wait until the sidecar has published itself, or fail with its own log."""
+    deadline = time.monotonic() + STARTUP_TIMEOUT
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise AssertionError(
+                f"the gateway exited during startup with status {process.returncode}"
+            )
+        record = read_runtime(None)
+        if record is not None:
+            return record
+        time.sleep(0.1)
+    raise AssertionError("the gateway never published a runtime file")
 
 
 @pytest.fixture
@@ -315,6 +373,111 @@ def test_a_corrupt_runtime_file_is_reported_and_not_deleted(harness: Harness) ->
     assert not state.running
     assert state.kind == supervisor.STATUS_CORRUPT
     assert harness.runtime_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# The two paths that orphaned a live sidecar by removing its runtime file
+# ---------------------------------------------------------------------------
+
+
+def test_a_failing_gateway_does_not_clear_a_healthy_gateways_runtime_file(
+    harness: Harness,
+) -> None:
+    """A gateway may only retract an advertisement it actually published.
+
+    Observed: a second gateway whose *inference* port was free but whose *admin*
+    port collided exited with a startup error -- and its ``finally`` cleared the
+    runtime file belonging to the first, healthy gateway. That gateway kept
+    serving with nothing on disk naming it, so ``status`` said ``not_started``
+    and ``stop`` had nothing to reap it by. It had to be killed by hand.
+
+    The admin bind sits *inside* ``serve()``'s ``try``; the inference bind sits
+    outside it, which is why two identical starts never showed this.
+    """
+    running = supervisor.start(timeout=STARTUP_TIMEOUT)
+    record = read_runtime(None)
+    assert record is not None
+    assert record.admin_port != 0, "no admin listener; the collision is unreachable"
+
+    colliding = harness.config_path.parent / "colliding.yaml"
+    _write_config(
+        colliding,
+        harness.upstream.url,
+        # Ephemeral inference port: genuinely free, so this process gets past
+        # the bind that happens before the try block.
+        port=0,
+        admin_port=record.admin_port,
+    )
+
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, "-m", supervisor.GATEWAY_MODULE],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        env={**os.environ, "HERMES_AUTO_CONFIG": str(colliding)},
+        timeout=STARTUP_TIMEOUT,
+        creationflags=_NO_WINDOW,
+    )
+    output = (completed.stdout + completed.stderr).decode("utf-8", errors="replace")
+    assert completed.returncode == 2, f"expected a startup failure, got:\n{output}"
+    assert "could not bind" in output, output
+
+    assert harness.runtime_file.exists(), (
+        "a failed gateway deleted a healthy gateway's runtime file: the live "
+        "process is now unreapable by `hermes auto stop`"
+    )
+    after = supervisor.status()
+    assert after.running, after.detail
+    assert after.instance_id == running.instance_id
+    assert after.pid == running.pid
+
+
+def test_a_gateway_reached_by_name_is_not_declared_stale(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """``gateway.url`` may name ``localhost``, and supervision must follow it.
+
+    ``require_loopback`` accepts ``localhost`` and ``bind_socket`` binds
+    ``getaddrinfo(...)[0]``, which on this machine -- and on macOS and any
+    IPv6-enabled Linux -- is ``::1``. Supervision probed a hardcoded
+    ``127.0.0.1``: ``/healthz`` was refused there, the *IPv4* address bound
+    freely, and "the bind decides" concluded *stale* with total confidence about
+    the wrong address family. The live gateway's runtime file was removed and
+    ``stop`` could no longer reap it. This is cross-platform, not a Windows
+    quirk.
+    """
+    by_name = tmp_path / "localhost-config.yaml"
+    _write_config(by_name, harness.upstream.url, url="http://localhost:0")
+    monkeypatch.setenv("HERMES_AUTO_CONFIG", str(by_name))
+
+    process = _spawn_gateway(by_name, harness.log_file)
+    try:
+        record = _await_runtime_file(process)
+
+        # It really is up, and reachable at the name the configuration gave.
+        response = httpx.get(
+            f"http://localhost:{record.port}/healthz", timeout=10
+        )
+        assert response.status_code == 200
+        assert response.json()["instance_id"] == record.instance_id
+
+        state = supervisor.status()
+        assert state.running, state.detail
+        assert state.kind == supervisor.STATUS_RUNNING
+        assert state.instance_id == record.instance_id
+        assert harness.runtime_file.exists(), (
+            "supervision removed a live gateway's runtime file and orphaned it"
+        )
+
+        # And the whole point of keeping the file: stop can still reap it.
+        stopped = supervisor.stop(timeout=30.0)
+        assert not stopped.running
+        assert process.wait(timeout=30.0) == 0
+        assert not harness.runtime_file.exists()
+    finally:
+        with contextlib.suppress(Exception):
+            process.kill()
+        with contextlib.suppress(Exception):
+            process.wait(timeout=15.0)
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,6 @@ configured" and "wrong token" do not separate under timing analysis.
 
 from __future__ import annotations
 
-import ast
 import inspect
 import pathlib
 
@@ -123,40 +122,100 @@ def test_the_explicit_expected_token_argument_is_honoured() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Structural proof, so the fix cannot be refactored away silently
+# The timing oracle, proved by execution rather than counted in the source
 # ---------------------------------------------------------------------------
 
 
-def _authenticate_ast() -> ast.FunctionDef:
-    source = inspect.getsource(ingress.authenticate)
-    tree = ast.parse(source.lstrip())
-    node = tree.body[0]
-    assert isinstance(node, ast.FunctionDef)
-    return node
+@pytest.fixture
+def comparisons(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Record every ``compare_token`` call ``authenticate`` actually makes.
 
-
-def test_authenticate_still_pays_a_comparison_on_the_absent_path() -> None:
-    """Absent and wrong must not separate under timing.
-
-    An early ``raise`` before any comparison would fix the bypass and introduce
-    a timing oracle: a local process could then learn whether the gateway has a
-    token at all by measuring which 401 came back faster. ``admin.py`` solved
-    this with a decoy comparison and this must match, so the property is
-    asserted structurally -- there is no way to observe it from the outside,
-    which is exactly why it would be dropped by a well-meaning refactor.
+    ``authenticate`` reads ``compare_token`` as a module global, so replacing it
+    on the module is enough. The real implementation still runs underneath, so
+    the allow path keeps working and this observes rather than stubs.
     """
-    calls = [
-        node
-        for node in ast.walk(_authenticate_ast())
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "compare_token"
-    ]
-    assert len(calls) >= 2, (
-        "authenticate must call compare_token on both the absent-token path "
-        "(as a decoy) and the normal path; found "
-        f"{len(calls)} call(s)"
+    recorded: list[tuple[str, str]] = []
+    real = ingress.compare_token
+
+    def spy(supplied: str, expected: str) -> bool:
+        recorded.append((supplied, expected))
+        return real(supplied, expected)
+
+    monkeypatch.setattr(ingress, "compare_token", spy)
+    return recorded
+
+
+#: The four ways a request is refused. Every one of them must reach the
+#: comparison, because the oracle is the *difference* between them.
+_DENIAL_PATHS = [
+    pytest.param("s3cret", None, "", id="no-header"),
+    pytest.param("s3cret", "Basic abc", "", id="malformed-header"),
+    pytest.param("s3cret", "Bearer wrong", "wrong", id="wrong-token"),
+    pytest.param(None, "Bearer whatever", "whatever", id="no-expected-token"),
+]
+
+
+@pytest.mark.parametrize("configured,header,supplied", _DENIAL_PATHS)
+def test_every_denial_path_executes_exactly_one_comparison(
+    configured: object,
+    header: str | None,
+    supplied: str,
+    comparisons: list[tuple[str, str]],
+) -> None:
+    """Absent, malformed, wrong and unconfigured must all cost the same.
+
+    This is the property the module docstring exists for, and counting
+    ``ast.Call`` nodes does not assert it. The mutation it has to catch is an
+    early return added *above* the comparisons::
+
+        supplied = _bearer(request.headers.get("authorization"))
+        if not supplied:
+            raise _invalid_api_key()
+
+    Both original ``compare_token`` calls survive that edit, so a source-level
+    count passes while the no-header and malformed-header paths return without
+    comparing anything -- handing a local process exactly the timing oracle
+    ``ingress.py`` is written to deny it. Only running the function can tell.
+
+    Exactly one, not at least one: a path that compares twice is as
+    distinguishable as one that compares zero times.
+    """
+    assert _denied(_FakeRequest(configured, header)), "this path must deny"
+
+    assert len(comparisons) == 1, (
+        f"expected exactly one compare_token call on the "
+        f"configured={configured!r} header={header!r} path; got "
+        f"{len(comparisons)}. Zero means an early return skipped the "
+        f"comparison and this path is now measurably faster than the others."
     )
+    assert comparisons[0][0] == supplied, (
+        "the comparison must be against what the caller actually sent"
+    )
+
+
+def test_the_allow_path_executes_exactly_one_comparison(
+    comparisons: list[tuple[str, str]],
+) -> None:
+    """The success path is the baseline every denial is measured against."""
+    assert not _denied(_FakeRequest("s3cret", "Bearer s3cret"))
+
+    assert comparisons == [("s3cret", "s3cret")], comparisons
+
+
+def test_the_absent_token_path_compares_against_the_decoy_not_the_empty_string(
+    comparisons: list[tuple[str, str]],
+) -> None:
+    """The decoy has to be a real operand, or the comparison is free.
+
+    ``compare_digest`` is constant-time in the length of its inputs. Paying a
+    comparison against ``""`` would execute a call and still return faster than
+    the wrong-token path, which reinstates the oracle one level down.
+    """
+    assert _denied(_FakeRequest(None, "Bearer whatever"))
+
+    (_, expected), = comparisons
+    assert expected == ingress._DECOY_TOKEN
+    assert len(expected) >= 32, expected
 
 
 def test_the_decoy_token_is_random_and_not_a_literal() -> None:

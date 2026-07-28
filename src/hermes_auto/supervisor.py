@@ -27,7 +27,16 @@ supervision therefore asks the kernel whether the address can be **bound**,
 which is a local question no firewall can distort. A timeout with the port
 still held is reported as *unresponsive* and the file is left alone, because a
 loaded gateway looks exactly like that and removing its file would strand a
-live process. See :func:`_port_bindable`.
+live process. See :func:`_port_binding`.
+
+**Every probe follows ``gateway.url``, and every address it resolves to.** The
+gateway binds the first ``getaddrinfo`` result for the configured host, and
+``require_loopback`` permits ``localhost`` and ``::1`` as well as ``127.0.0.1``.
+Probing a hardcoded ``127.0.0.1`` against a gateway on ``::1`` found the IPv4
+address free, declared a serving process stale, deleted its runtime file and
+left it unreapable. So the probe host comes from configuration
+(:func:`_probe_host`) and the bind test must find *all* of its addresses free
+before it will call a port free (:func:`_port_binding`).
 
 **Stopping goes through the admin API first, on every platform.** Windows has no
 ``SIGTERM``: ``os.kill`` there calls ``TerminateProcess``, which is the hard kill,
@@ -67,6 +76,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import ipaddress
 import json
 import os
 import pathlib
@@ -76,6 +86,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .config import AutoRouterConfig, ConfigError, load_config
@@ -105,7 +116,10 @@ __all__ = [
 #: The module the sidecar runs. ``python -m hermes_auto.gateway.main``.
 GATEWAY_MODULE = "hermes_auto.gateway.main"
 
-#: Probes are loopback-only, matching the only address the gateway ever binds.
+#: The loopback address probes fall back to when ``gateway.url`` does not name a
+#: usable one. **Not** the address probes always use: see :func:`_probe_host` for
+#: why hardcoding it orphaned a live gateway. Kept as a module constant because
+#: ``commands.py`` reads it.
 PROBE_HOST = "127.0.0.1"
 
 #: One health probe's ceiling. Short, because ``status`` runs on every session
@@ -148,6 +162,13 @@ _PROBE_OK = "ok"
 _PROBE_REFUSED = "refused"
 _PROBE_TIMEOUT = "timeout"
 _PROBE_FOREIGN = "foreign"
+
+# Bind-probe outcomes, internal. ``residue`` is the POSIX ``TIME_WAIT`` case:
+# nothing is listening, but a connection closed here recently. See
+# :func:`_port_binding`.
+_BIND_FREE = "free"
+_BIND_RESIDUE = "residue"
+_BIND_HELD = "held"
 
 
 class SupervisorError(Exception):
@@ -194,6 +215,52 @@ def _resolve_config(config: AutoRouterConfig | None) -> AutoRouterConfig:
         raise SupervisorError(f"configuration is unusable: {exc}") from exc
 
 
+def _probe_host(config: AutoRouterConfig) -> str:
+    """The loopback host supervision must probe: the one the gateway binds.
+
+    This used to be the constant ``127.0.0.1`` and that was a live bug, not a
+    simplification. ``gateway/main.py``'s ``require_loopback`` accepts
+    ``localhost`` and ``::1`` as well, and ``bind_socket`` binds
+    ``getaddrinfo(...)[0]`` -- which for ``localhost`` is ``::1`` first on this
+    machine, on macOS, and on any IPv6-enabled Linux. With
+    ``gateway.url: http://localhost:8787`` the gateway therefore answered on
+    ``::1`` while supervision asked ``127.0.0.1``: ``/healthz`` was refused, the
+    *IPv4* address bound freely, and "the bind decides" concluded **stale** with
+    total confidence about the wrong address family. The runtime file of a
+    process that was serving traffic was deleted, and ``stop`` could no longer
+    reap it. Cross-platform, not a Windows quirk.
+
+    ``require_loopback`` is deliberately reimplemented here rather than imported:
+    it lives in ``gateway/main.py``, which pulls in uvicorn and Starlette, and
+    ``status`` runs on every Hermes session start. Where the two could disagree
+    this one is the more conservative -- it never raises, and falls back to
+    :data:`PROBE_HOST` for anything it cannot vouch for, because a probe host is
+    a diagnostic input and refusing to report a status is worse than reporting
+    one against the documented default.
+    """
+    try:
+        host = urllib.parse.urlsplit(config.gateway.url).hostname
+    except ValueError:
+        return PROBE_HOST
+    if not host:
+        return PROBE_HOST
+    if host == "localhost":
+        return host
+    try:
+        if not ipaddress.ip_address(host).is_loopback:
+            return PROBE_HOST
+    except ValueError:
+        return PROBE_HOST
+    return host
+
+
+def _authority(host: str, port: int) -> str:
+    """``host:port`` for a URL, bracketing an IPv6 literal as RFC 3986 requires."""
+    if ":" in host:
+        return f"[{host}]:{port}"
+    return f"{host}:{port}"
+
+
 def gateway_log_path(config: AutoRouterConfig | None = None) -> pathlib.Path:
     """Where the sidecar's stdout and stderr land."""
     config = _resolve_config(config)
@@ -230,9 +297,15 @@ def _rotate_log(path: pathlib.Path) -> None:
 
 
 def _probe_health(
-    port: int, *, timeout: float = HEALTH_TIMEOUT_SECONDS
+    host: str, port: int, *, timeout: float = HEALTH_TIMEOUT_SECONDS
 ) -> tuple[str, str | None]:
-    """``GET /healthz`` on *port*. Returns ``(outcome, instance_id)``.
+    """``GET /healthz`` on *host*:*port*. Returns ``(outcome, instance_id)``.
+
+    *host* comes from :func:`_probe_host` and is the host the gateway was
+    configured to bind, not a constant. When it is the name ``localhost`` it is
+    passed through as a name on purpose: ``http.client`` walks every
+    ``getaddrinfo`` result, so a gateway on ``::1`` is reached even where the
+    IPv4 entry sorts first.
 
     Outcomes are branched finely on purpose:
 
@@ -251,7 +324,7 @@ def _probe_health(
         non-JSON body, or JSON without an ``instance_id``. Some other service
         owns the port.
     """
-    url = f"http://{PROBE_HOST}:{port}/healthz"
+    url = f"http://{_authority(host, port)}/healthz"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             raw = response.read(64 * 1024)
@@ -282,8 +355,47 @@ def _probe_health(
     return _PROBE_OK, answered
 
 
-def _port_bindable(port: int) -> bool:
-    """True when *port* can be bound -- that is, nothing is listening on it.
+def _bind_one(
+    family: int, socktype: int, proto: int, address: object
+) -> str:
+    """Classify a single resolved address: free, TIME_WAIT residue, or held."""
+    sock = socket.socket(family, socktype, proto)
+    try:
+        sock.bind(address)  # type: ignore[arg-type]
+        return _BIND_FREE
+    except OSError:
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            sock.close()
+
+    if os.name == "nt":
+        # No SO_REUSEADDR retry here, ever. On Windows it lets a second process
+        # bind a port another process is *actively listening on*, so a retry
+        # would classify a live gateway as free and strand it -- the same class
+        # of bug this function exists to prevent, and the reason `bind_socket`
+        # sets the option only on POSIX.
+        return _BIND_HELD
+
+    # POSIX only, and only after a plain bind has already failed. Here
+    # SO_REUSEADDR permits exactly one thing a plain bind forbids: binding over
+    # a socket in TIME_WAIT. It does *not* permit binding over an active
+    # listener -- that would be SO_REUSEPORT -- so success below means "nothing
+    # is listening; a connection merely closed here recently".
+    sock = socket.socket(family, socktype, proto)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(address)  # type: ignore[arg-type]
+        return _BIND_RESIDUE
+    except OSError:
+        return _BIND_HELD
+    finally:
+        with contextlib.suppress(OSError):
+            sock.close()
+
+
+def _port_binding(host: str, port: int) -> str:
+    """Who holds *host*:*port*? ``free``, ``residue``, or ``held``.
 
     This is the decisive stale-file test, and it is decisive precisely because
     it never puts a packet on the wire.
@@ -298,31 +410,80 @@ def _port_bindable(port: int) -> bool:
     merely slow, and no stale runtime file is ever cleaned. Asking the kernel
     whether the address is free asks the question that was actually meant.
 
-    ``SO_REUSEADDR`` is deliberately not set. It is exactly what would let this
-    bind succeed against a socket in ``TIME_WAIT`` on POSIX, turning "a
-    connection to it closed recently" into a false "nothing is listening".
+    **Every resolved address is tried, and ``held`` wins.** The previous version
+    returned on the first candidate, which for a ``localhost`` gateway meant it
+    answered about IPv4 while the listener sat on ``::1`` -- confidently
+    declaring a serving process stale. A name that resolves to several addresses
+    is free only when *all* of them are.
+
+    **``residue`` exists so a crash does not lock out a restart.** A plain bind
+    to a POSIX port carrying ``TIME_WAIT`` fails, and reporting that as ``held``
+    made ``status`` say *unresponsive* and ``start`` refuse to start -- for up to
+    a minute after a crash, which is the moment ``start`` most needs to work,
+    while claiming a process holds a port that no process holds. ``SO_REUSEADDR``
+    distinguishes the two cases and is the only thing that can: see
+    :func:`_bind_one` for why the retry is safe on POSIX and forbidden on
+    Windows. Callers that only care whether a live process is there should use
+    :func:`_port_bindable`, which folds ``residue`` in with ``free``; the safe
+    direction -- never call a held port free -- is unchanged.
 
     The bind is held for microseconds and only on the path where the gateway is
-    believed dead, so the window in which it could refuse a genuinely
-    restarting gateway is narrower than the one ``start`` already tolerates.
+    believed dead, so the window in which it could refuse a genuinely restarting
+    gateway is narrower than the one ``start`` already tolerates.
     """
     try:
         infos = socket.getaddrinfo(
-            PROBE_HOST, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+            host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
         )
     except OSError:
-        return False
+        return _BIND_HELD
+    if not infos:
+        return _BIND_HELD
+
+    residue = False
     for family, socktype, proto, _, address in infos:
-        sock = socket.socket(family, socktype, proto)
-        try:
-            sock.bind(address)
-        except OSError:
-            return False
-        finally:
-            with contextlib.suppress(OSError):
-                sock.close()
-        return True
-    return False
+        outcome = _bind_one(family, socktype, proto, address)
+        if outcome == _BIND_HELD:
+            return _BIND_HELD
+        if outcome == _BIND_RESIDUE:
+            residue = True
+    return _BIND_RESIDUE if residue else _BIND_FREE
+
+
+def _port_bindable(host: str, port: int) -> bool:
+    """True when no process is listening on *host*:*port*.
+
+    ``TIME_WAIT`` residue counts as bindable: the process that held the socket
+    has gone, which is the only question the callers of this wrapper ask.
+    """
+    return _port_binding(host, port) != _BIND_HELD
+
+
+def _clear_runtime_if_ours(
+    state_dir: pathlib.Path | None, instance_id: str | None
+) -> bool:
+    """Remove the runtime file only while it still names *instance_id*.
+
+    ``clear_runtime`` unlinks whatever is at the path. Every caller here reached
+    its decision from a record read some milliseconds earlier, and in that gap a
+    replacement gateway may have bound its ports and published a *new* file.
+    Unlinking that one leaves a process serving traffic with nothing on disk
+    naming it -- ``status`` then says ``not_started`` and ``stop`` has nothing to
+    reap it by, which is exactly the incident this re-check exists to prevent.
+
+    Read-compare-unlink is not atomic; there is no portable compare-and-unlink.
+    This narrows the window to a single file read rather than closing it, and is
+    stated rather than claimed closed.
+    """
+    if not instance_id:
+        return clear_runtime(state_dir)
+    try:
+        current = read_runtime(state_dir)
+    except RuntimeFileError:
+        return False
+    if current is None or current.instance_id != instance_id:
+        return False
+    return clear_runtime(state_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +500,9 @@ def status(config: AutoRouterConfig | None = None) -> Status:
     """
     config = _resolve_config(config)
     state_dir = config.gateway.state_dir
+    # Resolved once, from configuration, and threaded through every probe below.
+    # A hardcoded 127.0.0.1 here orphaned an IPv6-bound gateway: see _probe_host.
+    host = _probe_host(config)
 
     try:
         record = read_runtime(state_dir)
@@ -367,7 +531,7 @@ def status(config: AutoRouterConfig | None = None) -> Status:
             kind=STATUS_NOT_STARTED,
         )
 
-    outcome, answered = _probe_health(record.port)
+    outcome, answered = _probe_health(host, record.port)
 
     if outcome == _PROBE_OK and answered == record.instance_id:
         return Status(
@@ -376,7 +540,7 @@ def status(config: AutoRouterConfig | None = None) -> Status:
             port=record.port,
             pid=record.pid,
             detail=(
-                f"running on {PROBE_HOST}:{record.port} "
+                f"running on {_authority(host, record.port)} "
                 f"(instance {record.instance_id}, pid {record.pid})"
             ),
             kind=STATUS_RUNNING,
@@ -393,7 +557,7 @@ def status(config: AutoRouterConfig | None = None) -> Status:
             port=record.port,
             pid=None,
             detail=(
-                f"another gateway owns {PROBE_HOST}:{record.port}: it reports "
+                f"another gateway owns {_authority(host, record.port)}: it reports "
                 f"instance {answered}, the runtime file records "
                 f"{record.instance_id}. Nothing was stopped or removed -- that "
                 f"process does not belong to this install."
@@ -408,7 +572,7 @@ def status(config: AutoRouterConfig | None = None) -> Status:
             port=record.port,
             pid=None,
             detail=(
-                f"something is listening on {PROBE_HOST}:{record.port} but it is "
+                f"something is listening on {_authority(host, record.port)} but it is "
                 f"not a hermes-auto gateway (no usable /healthz). Nothing was "
                 f"stopped or removed."
             ),
@@ -416,39 +580,53 @@ def status(config: AutoRouterConfig | None = None) -> Status:
         )
 
     # Refused or timed out. Neither one alone proves the port is free -- see
-    # `_port_bindable` for the measured reason a timeout is the *normal* answer
-    # for a dead port here. The bind decides.
-    if not _port_bindable(record.port):
+    # `_port_binding` for the measured reason a timeout is the *normal* answer
+    # for a dead port here. The bind decides, across every address the host
+    # resolves to.
+    binding = _port_binding(host, record.port)
+    if binding == _BIND_HELD:
         return Status(
             running=False,
             instance_id=record.instance_id,
             port=record.port,
             pid=record.pid,
             detail=(
-                f"a process holds {PROBE_HOST}:{record.port} but did not answer "
-                f"/healthz within {HEALTH_TIMEOUT_SECONDS}s. The runtime file "
-                f"was left in place: a loaded gateway looks like this, and "
-                f"removing it would strand a live process."
+                f"a process holds {_authority(host, record.port)} but did not "
+                f"answer /healthz within {HEALTH_TIMEOUT_SECONDS}s. The runtime "
+                f"file was left in place: a loaded gateway looks like this, and "
+                f"removing it would strand a live process. On Windows this can "
+                f"also be TIME_WAIT residue from a connection that closed "
+                f"seconds ago rather than a live listener -- if so it clears on "
+                f"its own within about a minute and `start` will work again."
             ),
             kind=STATUS_UNRESPONSIVE,
         )
 
-    # Nothing is listening and the address is free. The file is stale.
+    # Nothing is listening. The file is stale. Cleared identity-scoped: between
+    # the read above and here a replacement gateway may have published its own
+    # file, and unlinking *that* one would orphan a process that is serving --
+    # the same failure, reached from the other side.
     removed = False
     with contextlib.suppress(RuntimeFileError):
-        removed = clear_runtime(state_dir)
+        removed = _clear_runtime_if_ours(state_dir, record.instance_id)
+    residue_note = (
+        " A connection closed there recently (TIME_WAIT); nothing is listening."
+        if binding == _BIND_RESIDUE
+        else ""
+    )
     return Status(
         running=False,
         instance_id=None,
         port=record.port,
         pid=None,
         detail=(
-            f"not running: nothing holds {PROBE_HOST}:{record.port}. "
+            f"not running: nothing holds {_authority(host, record.port)}. "
             + (
                 "The stale runtime file was removed."
                 if removed
                 else "The stale runtime file was already gone."
             )
+            + residue_note
         ),
         kind=STATUS_STALE_CLEANED,
     )
@@ -619,7 +797,7 @@ def start(
 
 
 def _request_admin_shutdown(
-    admin_port: int, token: str | None
+    host: str, admin_port: int, token: str | None
 ) -> tuple[bool, str]:
     """POST ``/admin/v1/shutdown``. Returns ``(accepted, detail)``.
 
@@ -638,7 +816,7 @@ def _request_admin_shutdown(
         )
 
     request = urllib.request.Request(
-        f"http://{PROBE_HOST}:{admin_port}/admin/v1/shutdown", method="POST"
+        f"http://{_authority(host, admin_port)}/admin/v1/shutdown", method="POST"
     )
     request.add_header("Authorization", f"Bearer {token}")
     try:
@@ -662,7 +840,7 @@ def _request_admin_shutdown(
     return True, f"admin shutdown accepted ({code}, servers_signalled={signalled})"
 
 
-def _instance_gone(config: AutoRouterConfig, record: RuntimeFile) -> bool:
+def _instance_gone(config: AutoRouterConfig, host: str, record: RuntimeFile) -> bool:
     """Has the *recorded* gateway instance stopped running?
 
     Two local signals, no network traffic, in cost order:
@@ -687,18 +865,18 @@ def _instance_gone(config: AutoRouterConfig, record: RuntimeFile) -> bool:
         return True
     if current is None or current.instance_id != record.instance_id:
         return True
-    return _port_bindable(record.port)
+    return _port_bindable(host, record.port)
 
 
 def _wait_for_exit(
-    config: AutoRouterConfig, record: RuntimeFile, deadline: float
+    config: AutoRouterConfig, host: str, record: RuntimeFile, deadline: float
 ) -> bool:
     """Poll until the recorded instance is gone, or the deadline passes."""
     while time.monotonic() < deadline:
-        if _instance_gone(config, record):
+        if _instance_gone(config, host, record):
             return True
         time.sleep(POLL_INTERVAL_SECONDS)
-    return _instance_gone(config, record)
+    return _instance_gone(config, host, record)
 
 
 def _signal_pid(pid: int, *, hard: bool) -> tuple[bool, str]:
@@ -742,6 +920,7 @@ def stop(
     """
     config = _resolve_config(config)
     logger = get_logger("hermes_auto.supervisor")
+    host = _probe_host(config)
 
     current = status(config)
     if current.kind in (STATUS_FOREIGN, STATUS_UNRESPONSIVE):
@@ -766,7 +945,7 @@ def stop(
         admin_token = None
 
     deadline = time.monotonic() + timeout
-    accepted, detail = _request_admin_shutdown(record.admin_port, admin_token)
+    accepted, detail = _request_admin_shutdown(host, record.admin_port, admin_token)
     logger.info(
         {
             "event": "supervisor.shutdown.requested",
@@ -777,15 +956,15 @@ def stop(
     )
 
     steps = [f"admin shutdown: {detail}"]
-    if accepted and _wait_for_exit(config, record, deadline):
-        return _finish_stop(config, record.port, steps, logger)
+    if accepted and _wait_for_exit(config, host, record, deadline):
+        return _finish_stop(config, record, steps, logger)
 
     # Escalate -- but only against a process whose identity we have *just*
     # re-confirmed. A stale runtime file must never be able to cause a signal.
     for hard in (False, True):
-        if _instance_gone(config, record):
-            return _finish_stop(config, record.port, steps, logger)
-        outcome, answered = _probe_health(record.port)
+        if _instance_gone(config, host, record):
+            return _finish_stop(config, record, steps, logger)
+        outcome, answered = _probe_health(host, record.port)
         if outcome != _PROBE_OK or answered != record.instance_id:
             steps.append(
                 "escalation abandoned: the recorded instance_id no longer "
@@ -797,8 +976,8 @@ def stop(
         steps.append(f"{'kill' if hard else 'terminate'}: {why}")
         if not sent:
             break
-        if _wait_for_exit(config, record, max(deadline, time.monotonic() + 2.0)):
-            return _finish_stop(config, record.port, steps, logger)
+        if _wait_for_exit(config, host, record, max(deadline, time.monotonic() + 2.0)):
+            return _finish_stop(config, record, steps, logger)
 
     final = status(config)
     if final.running:
@@ -806,18 +985,23 @@ def stop(
             "the gateway is still answering after the full stop sequence: "
             + "; ".join(steps)
         )
-    return _finish_stop(config, record.port, steps, logger)
+    return _finish_stop(config, record, steps, logger)
 
 
 def _finish_stop(
     config: AutoRouterConfig,
-    port: int,
+    record: RuntimeFile,
     steps: list[str],
     logger: object,
 ) -> Status:
-    """Clear the runtime file and report. Called only once the port is quiet."""
+    """Clear the runtime file and report. Called only once the port is quiet.
+
+    Identity-scoped: by the time a drain finishes, a replacement gateway may
+    already have published its own file, and removing that one would orphan it.
+    """
     with contextlib.suppress(RuntimeFileError):
-        clear_runtime(config.gateway.state_dir)
+        _clear_runtime_if_ours(config.gateway.state_dir, record.instance_id)
+    port = record.port
     detail = "stopped (" + "; ".join(steps) + ")"
     logger.info(  # type: ignore[attr-defined]
         {"event": "supervisor.stopped", "port": port, "steps": steps}

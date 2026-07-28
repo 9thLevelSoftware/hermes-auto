@@ -18,6 +18,7 @@ writes the real ``~/.hermes/auto-router``.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import logging
 import os
@@ -250,18 +251,110 @@ def test_digest_is_hmac_not_a_bare_concatenated_hash(tmp_path):
     assert expected != naive
 
 
+def _sha256_call_sites(source: str) -> list[str]:
+    """Every *call* to a sha256 constructor in *source*, however it is spelled.
+
+    Replaces ``"hashlib.sha256(" not in source``, which was wrong in both
+    directions. It missed an unsalted fallback written as ``_h.sha256(...)``
+    after ``import hashlib as _h`` -- a reviewer planted exactly that and the
+    check passed. And it fires on prose: ``redaction.py``'s own docstring
+    explains why an unsalted ``sha256(session_id)`` would be undetectable in the
+    output, so documenting the exclusion one word closer to the literal breaks
+    the test that enforces it.
+
+    Resolving the import bindings first fixes both. A ``Call`` is a call whatever
+    the module was renamed to, and a docstring is a ``Constant``.
+    """
+    tree = ast.parse(source)
+
+    module_aliases: set[str] = set()  # names bound to the hashlib module
+    direct_aliases: set[str] = set()  # names bound to hashlib.sha256 itself
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "hashlib":
+                    module_aliases.add(alias.asname or "hashlib")
+        elif isinstance(node, ast.ImportFrom) and node.module == "hashlib":
+            for alias in node.names:
+                if alias.name == "sha256":
+                    direct_aliases.add(alias.asname or "sha256")
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "sha256"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in module_aliases
+        ):
+            found.append(f"line {node.lineno}: {func.value.id}.sha256(...)")
+        elif isinstance(func, ast.Name) and func.id in direct_aliases:
+            found.append(f"line {node.lineno}: {func.id}(...)")
+    return found
+
+
+#: An unsalted fallback under an aliased import, plus a ``from hashlib import``
+#: spelling. The first is the mutation that defeated the substring check.
+UNSALTED_FALLBACK_CANARY = '''
+import hashlib as _h
+from hashlib import sha256 as _digest
+
+def session_digest(session_id, *, directory=None):
+    try:
+        salt = _salt_for(directory)
+    except RedactionError:
+        return _h.sha256(session_id.encode("utf-8")).hexdigest()
+    return hmac.new(salt, session_id.encode("utf-8"), hashlib.sha256).hexdigest()
+
+def elsewhere(value):
+    return _digest(value).hexdigest()
+'''
+
+#: Prose about the excluded construct. Must not be mistaken for the construct.
+DOCUMENTED_EXCLUSION_CANARY = '''
+"""There is no unsalted fallback here.
+
+An unsalted hashlib.sha256(session_id) is also sixty-four lowercase hex
+characters and would satisfy the frozen pattern identically.
+"""
+'''
+
+
+def test_the_unsalted_digest_detector_sees_through_an_alias_and_past_prose():
+    """Prove the detector before trusting it to report a clean module.
+
+    Both halves are load-bearing and both have been observed failing: the
+    substring form missed the aliased call, and three plans this phase tripped
+    the docstring inversion.
+    """
+    found = _sha256_call_sites(UNSALTED_FALLBACK_CANARY)
+    assert len(found) == 2, found
+    assert "_h.sha256(...)" in " ".join(found), "missed the aliased module call"
+    assert "_digest(...)" in " ".join(found), "missed the from-import call"
+
+    assert _sha256_call_sites(DOCUMENTED_EXCLUSION_CANARY) == [], (
+        "prose describing the excluded construct is not the construct; a check "
+        "that cannot tell them apart punishes documenting the exclusion"
+    )
+
+
 def test_no_unsalted_digest_path_exists_in_the_source():
     """A source-level assertion, because the fallback would be invisible in output.
 
-    ``hashlib.sha256`` appears exactly once, passed to ``hmac.new`` as the
-    digest constructor. A direct ``hashlib.sha256(...)`` *call* would be the
-    signature of an unsalted path, so its absence is asserted rather than
-    merely checking that the string ``hmac`` appears somewhere.
+    ``hashlib.sha256`` appears exactly once, *passed* to ``hmac.new`` as the
+    digest constructor rather than called. A sha256 constructor that is actually
+    invoked is the signature of an unsalted path, and no assertion on the output
+    can find one: the result is sixty-four lowercase hex characters either way.
     """
     source = inspect.getsource(redaction)
 
     assert "hmac.new(" in source
-    assert "hashlib.sha256(" not in source, "a direct sha256() call may be unsalted"
+    assert _sha256_call_sites(source) == [], (
+        "a sha256 constructor is called directly; that path may be unsalted"
+    )
 
 
 def test_session_digest_rejects_a_non_string(tmp_path):
@@ -273,6 +366,48 @@ def test_session_digest_rejects_a_non_string(tmp_path):
 # ---------------------------------------------------------------------------
 # redact()
 # ---------------------------------------------------------------------------
+
+
+#: The eleven keys plan 02-02 froze, reproduced literally rather than imported.
+#:
+#: Everything else in this file that touches ``BANNED_KEYS`` reads the constant,
+#: so a key deleted from the frozenset deletes its own assertions along with
+#: itself: ``parametrize("banned", sorted(BANNED_KEYS))`` loses a case and
+#: ``logged_keys & BANNED_KEYS == set()`` gets easier to satisfy. Both shrink
+#: silently and both stay green. Only a literal kept outside the module can
+#: fail. Same shape as ``tests/unit/test_provider_profile.py``'s
+#: ``REDACTION_BANNED_KEYS``.
+FROZEN_BANNED_KEYS = frozenset(
+    {
+        "messages",
+        "content",
+        "prompt",
+        "tool_calls",
+        "tool_result",
+        "tool_output",
+        "arguments",
+        "authorization",
+        "api_key",
+        "token",
+        "secret",
+    }
+)
+
+
+def test_banned_key_set_is_exactly_the_frozen_eleven():
+    """A change to ``BANNED_KEYS`` costs one visible edit here, or it fails.
+
+    Deliberate additions and removals are cheap -- edit both places. Accidental
+    ones are not, which is the whole point: a removal is a hole in the sink and
+    every other test of this constant is parameterised *by* it and therefore
+    blind to it.
+    """
+    assert redaction.BANNED_KEYS == FROZEN_BANNED_KEYS, {
+        "removed_from_the_module": sorted(FROZEN_BANNED_KEYS - redaction.BANNED_KEYS),
+        "added_to_the_module": sorted(redaction.BANNED_KEYS - FROZEN_BANNED_KEYS),
+    }
+    assert len(redaction.BANNED_KEYS) == 11
+    assert isinstance(redaction.BANNED_KEYS, frozenset)
 
 
 @pytest.mark.parametrize("banned", sorted(BANNED_KEYS))
@@ -532,6 +667,152 @@ def test_get_logger_does_not_stack_duplicate_handlers(tmp_path):
         h for h in first.handlers if isinstance(h.formatter, RedactingFormatter)
     ]
     assert len(redacting) == 1
+
+
+def _redacting_formatter(logger: logging.Logger) -> RedactingFormatter:
+    """The one :class:`RedactingFormatter` attached to *logger*."""
+    formatters = [
+        h.formatter for h in logger.handlers if isinstance(h.formatter, RedactingFormatter)
+    ]
+    assert len(formatters) == 1, formatters
+    return formatters[0]
+
+
+def _format_session_event(logger: logging.Logger) -> str:
+    """Render a record carrying ``RAW_SESSION_ID`` through *logger*'s formatter.
+
+    The digest in the output names which salt directory the formatter is really
+    using. Asserting on ``_directory`` would pass for a formatter that was
+    replaced but never reached; this cannot.
+    """
+    record = logging.LogRecord(
+        name=logger.name,
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg={"event": "gateway.started", "root_session_id": RAW_SESSION_ID},
+        args=None,
+        exc_info=None,
+    )
+    return _redacting_formatter(logger).format(record)
+
+
+def test_get_logger_emits_info_records_without_being_asked(tmp_path, capsys):
+    """The sink must not be inert.
+
+    A logger left at ``NOTSET`` inherits the root logger's ``WARNING``, so every
+    ``info`` record -- which is what nearly every structured event in this
+    project is -- is discarded before it reaches :class:`RedactingFormatter`.
+    Nothing observes that: the handler is attached, ``propagate`` is ``False``,
+    and the log is simply empty. "No raw prompt in the logs" is then satisfied
+    by a sink that logs nothing at all, which is the failure this asserts
+    against.
+    """
+    logger = get_logger("hermes_auto.test.redaction.level.default", directory=tmp_path)
+
+    assert logger.level == logging.INFO, (
+        "get_logger left the logger at NOTSET; it inherits root's WARNING and "
+        "drops every info record"
+    )
+    assert logger.isEnabledFor(logging.INFO)
+
+    logger.info({"event": "relay.stream.opened", "status": 200})
+
+    captured = capsys.readouterr()
+    stream = captured.err + captured.out
+    assert "relay.stream.opened" in stream, (
+        "an info record never reached the formatter; the sink is inert"
+    )
+
+
+def test_the_log_level_is_overridable_from_the_environment(monkeypatch, tmp_path):
+    """Quiet is a choice an operator makes, not the accidental default."""
+    monkeypatch.setenv("HERMES_AUTO_LOG_LEVEL", "WARNING")
+
+    logger = get_logger("hermes_auto.test.redaction.level.env", directory=tmp_path)
+
+    assert logger.level == logging.WARNING
+    assert not logger.isEnabledFor(logging.INFO)
+    assert logger.isEnabledFor(logging.WARNING)
+
+
+def test_an_unusable_log_level_falls_back_to_info_rather_than_raising(
+    monkeypatch, tmp_path
+):
+    """A typo in an environment variable must not take the gateway down.
+
+    Unlike the salt, the level is not a security property and the fallback is
+    visible in the output -- records still appear -- so there is nothing here
+    for a silent degradation to hide.
+    """
+    monkeypatch.setenv("HERMES_AUTO_LOG_LEVEL", "chatty")
+
+    logger = get_logger("hermes_auto.test.redaction.level.garbage", directory=tmp_path)
+
+    assert logger.level == logging.INFO
+
+
+def test_a_later_call_with_a_different_directory_wins(tmp_path):
+    """The salt directory the caller configured must be the one that is used.
+
+    ``create_app`` calls ``get_logger("hermes_auto.gateway")`` with no directory
+    while composing the app; ``lifespan`` then calls it again *with* the
+    configured ``gateway.state_dir``. A dedup guard that only asks whether *a*
+    ``RedactingFormatter`` is attached makes the second call a no-op, so the
+    configured directory never wins and every digest comes from the default
+    path instead -- silently, because both digests are well-formed.
+    """
+    name = "hermes_auto.test.redaction.directory.replaced"
+    install_a = tmp_path / "install-a"
+    install_b = tmp_path / "install-b"
+
+    get_logger(name, directory=install_a)
+    logger = get_logger(name, directory=install_b)
+
+    output = _format_session_event(logger)
+
+    assert session_digest(RAW_SESSION_ID, directory=install_b) in output
+    assert session_digest(RAW_SESSION_ID, directory=install_a) not in output, (
+        "the second call's directory was ignored; the formatter still salts "
+        "with the first"
+    )
+
+
+def test_a_call_without_a_directory_does_not_downgrade_a_configured_one(tmp_path):
+    """``directory=None`` means "no opinion", not "go back to the default".
+
+    Every call site in this project pairs one bare ``get_logger(name)`` at
+    composition time with one ``get_logger(name, directory=...)`` inside a
+    lifespan. Making the last call win unconditionally would fix the ordering
+    that exists today and break the reverse one, moving the salt back to the
+    default directory with nothing in the output to say so.
+    """
+    name = "hermes_auto.test.redaction.directory.no-downgrade"
+    configured = tmp_path / "configured"
+
+    get_logger(name, directory=configured)
+    logger = get_logger(name)
+
+    output = _format_session_event(logger)
+
+    assert session_digest(RAW_SESSION_ID, directory=configured) in output
+
+
+def test_replacing_the_directory_does_not_stack_handlers(tmp_path):
+    """Replacing a formatter, not adding a second handler.
+
+    A second handler would double every record -- and a reader comparing two
+    identical lines has no way to tell which formatter produced which.
+    """
+    name = "hermes_auto.test.redaction.directory.no-stacking"
+    get_logger(name, directory=tmp_path / "a")
+    get_logger(name, directory=tmp_path / "b")
+    logger = get_logger(name, directory=tmp_path / "c")
+
+    redacting = [
+        h for h in logger.handlers if isinstance(h.formatter, RedactingFormatter)
+    ]
+    assert len(redacting) == 1, redacting
 
 
 def test_the_module_exports_the_documented_interface():
