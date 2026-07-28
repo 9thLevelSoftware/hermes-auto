@@ -1,13 +1,13 @@
 # Project State
 
 ## Current Position
-- **Phase**: 2 of 11 (executed, pending review)
-- **Status**: Phase 2 complete — all 9 plans executed, 882 tests passing (was 206)
-- **Last Activity**: Phase 2 execution complete (2026-07-27)
+- **Phase**: 2 of 11 (complete)
+- **Status**: Phase 2 complete — review passed after 2 cycles, 971 tests passing (was 206)
+- **Last Activity**: Phase 2 review passed (2026-07-28)
 
 ## Progress
 ```
-[######··············] 31% — 16/52 plans complete
+[######··············] 31% — 16/52 plans complete (phases 1-2 reviewed)
 ```
 
 ## Phase 1 Review
@@ -124,6 +124,35 @@ distribution (`import providers` succeeds from any cwd), so no dedicated e2e ven
 following `design.md` §5.1's *charitable* fix registers the provider class successfully, then fails at
 first inference — worse than the "registers nothing" I had recorded.
 
+## Phase 2 Review
+**PASSED after 2 cycles.** 9 blockers, 20 warnings, 12 suggestions from a 4-reviewer dynamic panel;
+all blockers and 17 warnings resolved. Tests 882 → 971.
+
+**Five blockers were live defects**, each reproduced before being fixed: a lone UTF-16 surrogate in a
+request body returned 500 where direct returns 200; a gzip upstream aborted the non-streaming path
+because `complete()` returned decoded bytes under a compressed `content-length`; the 400 envelope body
+echoed `root_session_id` to the caller; a gateway that failed to bind **deleted a healthy gateway's
+runtime file**; and an IPv6-bound gateway was declared stale and orphaned.
+
+The fourth of those root-caused a real incident — two sidecars ran three hours on this machine with no
+`runtime.json`, unreapable by `hermes auto stop`. Also found: `.venv/Scripts/python.exe` is a
+**trampoline**, so every gateway is two PIDs and killing only the trampoline leaves the interpreter
+listening. 40 pre-existing orphans were reaped.
+
+**The governing finding is verification quality one level up from where execution found it.** Of 18
+source mutations, 13 went red and 5 went green — and all five shared one signature: *the test is
+written against the artifact it is meant to constrain.* `BANNED_KEYS` parametrized over `BANNED_KEYS`;
+the log scan scoped to the module whose author wrote it; `compare_token` counted rather than reached;
+`aiter_raw` forbidden in the file that never called it. Execution found ~45 vacuous verifications and
+wrote replacements — **the replacements inherited the defect**.
+
+**Orchestrator error, recorded**: commit `fd77adc` landed all of cycle 1's tests but only two of its
+source fixes, because the mutation loop used `git checkout --` to unwind, which reverts to HEAD rather
+than to the uncommitted working state. Found by the cycle-2 agent. All four fixes re-derived and
+re-verified load-bearing. **Rule: commit before mutating.**
+
+Full record: `.planning/phases/02-provider-plugin-passthrough-gateway/02-REVIEW.md`
+
 ## Open Items — raised by Phase 1 execution
 - **Phase 2**: no error-envelope schema exists. `wire/openai-error.v1.schema.json` is needed — context errors return the OpenAI error body, a different shape from `chat.completion`, currently unvalidated.
 - **Phase 2**: `pytest-asyncio` resolved to 1.4.0, which no longer defaults to a usable mode. Needs `asyncio_mode` in `[tool.pytest.ini_options]` or explicit markers before the first async test.
@@ -149,7 +178,7 @@ first inference — worse than the "registers nothing" I had recorded.
 - ~~Pin the `design.md` revision~~ — blob `18bb54b36485fa0813ec67f84a74628a9eee3aae` at commit `331a69d`, recorded in `01-CONTEXT.md` with a verification command
 
 ## Next Action
-Run `/legion:review` to verify Phase 2: Provider Plugin & Passthrough Gateway
+Run `/legion:plan 3` to plan Phase 3: Candidate Inventory & Model Cards
 
 ## Open Items — raised by Phase 2 Wave 1
 - ~~**Wave 2 blocker**: starlette 1.3.1 vs the 0.3x API the plan assumed~~ — **RESOLVED.** Two real deltas found by reading the installed source: `Starlette.__init__` takes only `lifespan` (no `on_startup`/`on_shutdown`), and `uvicorn 0.51`'s `capture_signals()` nests, so `main.py` subclasses `Server` for the admin listener.
@@ -239,3 +268,29 @@ Run `/legion:review` to verify Phase 2: Provider Plugin & Passthrough Gateway
   state directory, so `hermes auto stop` had nothing to reap them by. Manually killed. Either a crash
   path clears the runtime file before the process exits, or a test spawned a gateway outside the
   supervisor. Criterion 6's mid-session restart is separately proven; this is a different path.
+
+## Open Items — carried out of the Phase 2 review
+- **ROADMAP criterion 5 needs amending** to: *"CLI, TUI, and cron smoke tests pass; messaging gateway
+  and desktop are covered by a credentialed job and a Node e2e job respectively."* Endorsed by two
+  reviewers independently; both gaps are resourcing, not capability. **The cron gap is different in
+  kind** — a fixture-corpus hole the project can close itself — and the amendment should commit to
+  closing it rather than absorbing it.
+- **Phase 3**: the SSE corpus is streaming-only. The gap was mis-sized as total; it is **25% covered**
+  (3 error fixtures run through `complete()`). Uncovered: a 200 `chat.completion`, tool calls in a
+  non-streaming message, a chunked 200, a compressed 200. `conversation_loop.py:1949` sets
+  `agent._disable_streaming` after **one** stream failure, so a transient hiccup moves the rest of a
+  session permanently onto that branch.
+- **Phase 3**: move the `Content-Encoding: gzip` capability into `tests/integration/mock_upstream.py`
+  as a `FixtureSpec` flag; a local copy currently lives in `test_passthrough_identity.py`.
+- **Phase 6**: `/readyz` is unauthenticated and discloses the upstream host and port. The credential
+  was removed; the host disclosure is a design choice for monitors, documented not changed.
+- **Phase 11**: the TTFT gate skips under `CI`, so the §15.4 latency budget is enforced by no
+  automated gate. Needs a nightly job on a dedicated runner with `CI` unset.
+- **Phase 11**: the e2e CI job has no floor on what must run — an all-skip result exits 0.
+  `hermes-compat.yml`'s `report` job gets this right and is the model to copy.
+- **Phase 11**: `docs/threat-model.md` still describes the admin scope in the future tense and has no
+  row for `POST /admin/v1/shutdown`. Its own § Review cadence gate is unsatisfied; `docs/` was frozen
+  in Phase 2, so this is an explicit waiver, not an oversight.
+- **Tooling**: disk reached 0 bytes free mid-run (`OSError: Errno 28`); 12 GB freed from
+  `pytest-of-dasbl`. `tmp_path` retention plus per-test gateway logs outpace the three-run cap.
+  Worth a fixture-level cleanup before Phase 3 adds integration tests.
