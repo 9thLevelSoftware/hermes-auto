@@ -272,6 +272,45 @@ def _port_from_url(url: str, source: pathlib.Path | None) -> int:
     return DEFAULT_GATEWAY_PORT
 
 
+def _check_base_url(
+    value: str, source: pathlib.Path | None, key: str
+) -> str:
+    """Reject a ``base_url`` carrying an embedded credential.
+
+    ``https://user:pw@host/v1`` is a legal URL, and nothing else in this file
+    stops one: ``base_url`` is validated only as a string. Refusing it here is
+    the layer the operator actually sees, and it speaks in the same voice as
+    :func:`_check_credential_ref` -- a config that teaches "credentials never
+    belong in config.yaml" for one field while silently accepting one in the
+    field next to it has not taught the rule at all.
+
+    The output sites sanitize independently (see
+    :func:`hermes_auto.telemetry.redaction.sanitize_url`); that is deliberate
+    duplication, not redundancy, because every embedding caller and every test
+    in this repository builds an ``UpstreamConfig`` in-process and never passes
+    through this function.
+
+    The raised message never reprints the userinfo it is rejecting.
+    """
+    try:
+        parts = urllib.parse.urlsplit(value)
+        has_userinfo = parts.username is not None or parts.password is not None
+    except ValueError:
+        # Unparseable is not this check's business -- upstream_endpoint reports
+        # it with a better message at the point it matters.
+        return value
+    if not has_userinfo:
+        return value
+    raise _fail(
+        source,
+        key,
+        "contains an embedded credential (a 'user:password@' section). "
+        "Credentials never belong in config.yaml -- remove the userinfo from "
+        "the URL and put the secret in an environment variable named by "
+        "'upstream.credential_ref' instead.",
+    )
+
+
 def _check_credential_ref(
     value: str, source: pathlib.Path | None, key: str
 ) -> str:
@@ -416,8 +455,14 @@ def _build_upstream(
         "upstream.credential_ref",
     )
     return UpstreamConfig(
-        base_url=_as_str(
-            block.get("base_url", DEFAULT_UPSTREAM_BASE_URL), source, "upstream.base_url"
+        base_url=_check_base_url(
+            _as_str(
+                block.get("base_url", DEFAULT_UPSTREAM_BASE_URL),
+                source,
+                "upstream.base_url",
+            ),
+            source,
+            "upstream.base_url",
         ),
         model=_as_str(block.get("model", DEFAULT_UPSTREAM_MODEL), source, "upstream.model"),
         credential_ref=_check_credential_ref(

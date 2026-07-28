@@ -18,6 +18,8 @@ outputs field by field so the duplication cannot drift silently.
 
 from __future__ import annotations
 
+import re
+
 from hermes_auto.provider import DEFAULT_BASE_URL, TOKEN_ENV_VAR
 from hermes_auto.version import __version__
 
@@ -139,6 +141,23 @@ def render(
     literal, so a value containing a quote, a backslash or a newline produces a
     correct literal rather than a syntax error or an injection.
 
+    **Substitution is a single pass.** One ``re.sub`` over an alternation of all
+    three placeholders, not three sequential ``str.replace`` calls. Sequential
+    replacement makes the result depend on substitution order, because a value
+    inserted by an earlier pass is still part of the string the next pass
+    scans: with ``base_url`` set to the literal text
+    ``"__HERMES_AUTO_TOKEN_ENV_VAR__"``, the second pass rewrote the inside of
+    the literal the first pass had just produced and emitted
+    ``BASE_URL = ''HERMES_AUTO_ROUTER_TOKEN''`` -- two adjacent string literals,
+    a ``SyntaxError``, in a module Hermes imports at startup. A single pass
+    never rescans what it has written, so no value can collide with any
+    placeholder.
+
+    This is a robustness property rather than an injection defence: ``repr()``
+    already makes the quoting correct for any value, and all three inputs are
+    operator-configured. The failure it prevents is a shim that will not import,
+    reported far from its cause.
+
     Raises:
         ValueError: if a placeholder is missing from the template, which would
             mean an edit to :data:`SHIM_SOURCE` silently dropped a substitution
@@ -150,9 +169,21 @@ def render(
         "__HERMES_AUTO_TOKEN_ENV_VAR__": token_env_var,
         "__HERMES_AUTO_PLUGIN_VERSION__": plugin_version,
     }
-    for placeholder, value in values.items():
-        quoted = f'"{placeholder}"'
-        if quoted not in source:
+    for placeholder in values:
+        if f'"{placeholder}"' not in source:
             raise ValueError(f"shim template is missing placeholder {placeholder}")
-        source = source.replace(quoted, repr(str(value)))
-    return source
+
+    pattern = re.compile(
+        "|".join(re.escape(f'"{placeholder}"') for placeholder in values)
+    )
+
+    def _substitute(match: re.Match[str]) -> str:
+        # Strip the surrounding quotes the pattern matched to recover the
+        # placeholder name, then emit repr() of the configured value. Returned
+        # from a function rather than passed as a replacement *string* because
+        # a repl string would interpret backslashes in the value as group
+        # references -- re-introducing, in a new form, exactly the class of bug
+        # the single pass is here to remove.
+        return repr(str(values[match.group(0)[1:-1]]))
+
+    return pattern.sub(_substitute, source)

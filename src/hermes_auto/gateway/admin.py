@@ -70,7 +70,6 @@ import contextlib
 import os
 import pathlib
 import secrets
-import urllib.parse
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -86,7 +85,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from ..config import AutoRouterConfig, load_config
 from ..state.paths import state_dir as resolve_state_dir
 from ..state.runtime import RuntimeFileError, read_runtime
-from ..telemetry.redaction import get_logger, redact
+from ..telemetry.redaction import get_logger, redact, sanitize_url
 from .auth import AuthError, compare_token, permissions_ok, secure_write
 from .errors import (
     GatewayError,
@@ -381,26 +380,11 @@ class AdminAuthMiddleware:
 # ---------------------------------------------------------------------------
 
 
-def _sanitize_url(url: str) -> str:
-    """Return *url* with any embedded userinfo removed.
-
-    ``upstream.credential_ref`` accepts only ``env:NAME`` or ``none``, so a
-    credential should never reach ``base_url`` -- but ``https://user:pw@host/v1``
-    is a legal URL and config is operator-supplied. Stripping userinfo costs
-    nothing and removes the one way a secret could arrive in this field.
-    """
-    try:
-        parts = urllib.parse.urlsplit(url)
-    except ValueError:
-        return "<unparseable>"
-    if parts.username is None and parts.password is None:
-        return url
-    host = parts.hostname or ""
-    if parts.port is not None:
-        host = f"{host}:{parts.port}"
-    return urllib.parse.urlunsplit(
-        (parts.scheme, host, parts.path, parts.query, parts.fragment)
-    )
+#: This module had the only correct implementation of userinfo stripping, which
+#: is how the three sites that lacked one were found. It now lives in
+#: ``telemetry.redaction`` so all four share it; the local name is kept because
+#: it reads better at the call site below.
+_sanitize_url = sanitize_url
 
 
 def _uptime_seconds(started_at: str | None) -> float | None:

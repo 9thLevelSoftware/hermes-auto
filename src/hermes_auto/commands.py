@@ -753,6 +753,66 @@ def run_doctor(
     except Exception as exc:  # noqa: BLE001
         checks.append(Check("token", LEVEL_FAIL, f"could not be read: {exc!r}"))
 
+    # The directory the token files live in, not just the files. On Windows
+    # FILE_DELETE_CHILD on a directory permits deleting a file regardless of
+    # that file's own DACL, and the admin token is re-read per request -- so a
+    # principal who can write this directory can substitute the admin token and
+    # hold the admin scope. state.paths narrows directories it *creates*, but
+    # deliberately leaves a pre-existing one alone rather than overriding an
+    # operator; this check is how that decision stays visible.
+    try:
+        from .gateway.auth import directory_permissions_ok
+        from .state.paths import state_dir as _resolve_state_dir
+
+        ok, reason = directory_permissions_ok(
+            _resolve_state_dir(state_dir, create=False)
+        )
+        checks.append(
+            Check("state directory permissions", LEVEL_OK if ok else LEVEL_FAIL, reason)
+        )
+    except Exception as exc:  # noqa: BLE001
+        checks.append(
+            Check(
+                "state directory permissions",
+                LEVEL_FAIL,
+                f"could not be read: {exc!r}",
+            )
+        )
+
+    # The salt is not a credential, which is why it was missing from here: it
+    # authenticates nothing. But it is the only thing making root_session_hash
+    # non-correlatable, and an unsalted sha256 of a session id satisfies the
+    # same ^[0-9a-f]{64}$ pattern. An attacker who can read the salt can
+    # precompute the digest of any session id they can guess, and session ids
+    # are not secret -- so a readable salt silently converts every hashed
+    # identifier back into a correlatable one, with no visible change anywhere.
+    try:
+        from .gateway.auth import permissions_ok as _permissions_ok
+        from .state.paths import state_dir as _resolve_state_dir
+        from .telemetry.redaction import SALT_FILENAME
+
+        salt_file = _resolve_state_dir(state_dir, create=False) / SALT_FILENAME
+        if not salt_file.exists():
+            # Absent is not a failure: the salt is created on the first record
+            # that carries a session id, so a fresh install legitimately has none.
+            checks.append(
+                Check(
+                    "salt permissions",
+                    LEVEL_WARN,
+                    "no salt has been created yet; it is minted on the first "
+                    "session-bearing log record",
+                )
+            )
+        else:
+            ok, reason = _permissions_ok(salt_file)
+            checks.append(
+                Check("salt permissions", LEVEL_OK if ok else LEVEL_FAIL, reason)
+            )
+    except Exception as exc:  # noqa: BLE001
+        checks.append(
+            Check("salt permissions", LEVEL_FAIL, f"could not be read: {exc!r}")
+        )
+
     try:
         from .gateway.admin import admin_token_path, admin_token_permissions_ok, read_admin_token
 
@@ -803,7 +863,15 @@ def run_doctor(
 
     # --- the upstream, but only when there is a gateway to ask ------------
     if state is not None and state.running and state.port is not None:
-        answer = _http_get(f"http://{supervisor.PROBE_HOST}:{state.port}/readyz")
+        # The *resolved* probe host, not the PROBE_HOST fallback. A hardcoded
+        # 127.0.0.1 here asks IPv4 about a gateway that bound ::1 -- which is
+        # what `gateway.url: http://localhost:8787` produces on Windows, macOS
+        # and any IPv6-enabled Linux -- and reports an upstream failure that is
+        # not real. Same root cause as the cycle-1 supervision blocker.
+        probe_authority = supervisor.authority(
+            supervisor.probe_host(resolved), state.port
+        )
+        answer = _http_get(f"http://{probe_authority}/readyz")
         if answer is None:
             checks.append(
                 Check("upstream", LEVEL_WARN, "the gateway stopped answering /readyz mid-check")

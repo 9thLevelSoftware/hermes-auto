@@ -54,7 +54,7 @@ from starlette.types import Receive, Scope, Send
 from ..config import AutoRouterConfig, load_config
 from ..state.paths import state_dir as resolve_state_dir
 from ..state.runtime import new_instance_id
-from ..telemetry.redaction import get_logger
+from ..telemetry.redaction import get_logger, sanitize_url
 from . import ingress
 from .auth import mint_token, read_token
 from .errors import (
@@ -353,7 +353,12 @@ def create_app(
             {
                 "event": "gateway.started",
                 "instance_id": resolved_instance_id,
-                "upstream_base_url": config.upstream.base_url,
+                # Sanitized, not raw: `base_url` is operator-supplied and a URL
+                # may legally carry userinfo. `upstream_base_url` is not a
+                # BANNED_KEYS entry -- and must not become one, because the host
+                # and port are exactly what this record exists to report -- so
+                # the redaction sink passes the value through verbatim.
+                "upstream_base_url": sanitize_url(config.upstream.base_url),
                 "strict_validation": config.gateway.strict_validation,
             }
         )

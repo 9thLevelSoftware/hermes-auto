@@ -35,7 +35,7 @@ gateway binds the first ``getaddrinfo`` result for the configured host, and
 Probing a hardcoded ``127.0.0.1`` against a gateway on ``::1`` found the IPv4
 address free, declared a serving process stale, deleted its runtime file and
 left it unreapable. So the probe host comes from configuration
-(:func:`_probe_host`) and the bind test must find *all* of its addresses free
+(:func:`probe_host`) and the bind test must find *all* of its addresses free
 before it will call a port free (:func:`_port_binding`).
 
 **Stopping goes through the admin API first, on every platform.** Windows has no
@@ -106,7 +106,9 @@ __all__ = [
     "STATUS_UNRESPONSIVE",
     "Status",
     "SupervisorError",
+    "authority",
     "gateway_log_path",
+    "probe_host",
     "restart",
     "start",
     "status",
@@ -117,9 +119,12 @@ __all__ = [
 GATEWAY_MODULE = "hermes_auto.gateway.main"
 
 #: The loopback address probes fall back to when ``gateway.url`` does not name a
-#: usable one. **Not** the address probes always use: see :func:`_probe_host` for
-#: why hardcoding it orphaned a live gateway. Kept as a module constant because
-#: ``commands.py`` reads it.
+#: usable one. **Not** the address probes always use: see :func:`probe_host` for
+#: why hardcoding it orphaned a live gateway.
+#:
+#: This constant is a *fallback*, and any caller reaching for it in place of
+#: :func:`probe_host` has reintroduced that bug. ``commands.py`` did exactly
+#: that, which is why :func:`probe_host` and :func:`authority` are public.
 PROBE_HOST = "127.0.0.1"
 
 #: One health probe's ceiling. Short, because ``status`` runs on every session
@@ -215,8 +220,14 @@ def _resolve_config(config: AutoRouterConfig | None) -> AutoRouterConfig:
         raise SupervisorError(f"configuration is unusable: {exc}") from exc
 
 
-def _probe_host(config: AutoRouterConfig) -> str:
+def probe_host(config: AutoRouterConfig | None) -> str:
     """The loopback host supervision must probe: the one the gateway binds.
+
+    ``None`` yields :data:`PROBE_HOST`. ``commands.run_doctor`` can reach this
+    with an unresolved config -- it is documented to run every check and never
+    raise for a failure -- and a probe host is a diagnostic input, so falling
+    back to the documented default is right where raising would suppress the
+    rest of the report.
 
     This used to be the constant ``127.0.0.1`` and that was a live bug, not a
     simplification. ``gateway/main.py``'s ``require_loopback`` accepts
@@ -238,6 +249,8 @@ def _probe_host(config: AutoRouterConfig) -> str:
     a diagnostic input and refusing to report a status is worse than reporting
     one against the documented default.
     """
+    if config is None:
+        return PROBE_HOST
     try:
         host = urllib.parse.urlsplit(config.gateway.url).hostname
     except ValueError:
@@ -254,8 +267,14 @@ def _probe_host(config: AutoRouterConfig) -> str:
     return host
 
 
-def _authority(host: str, port: int) -> str:
-    """``host:port`` for a URL, bracketing an IPv6 literal as RFC 3986 requires."""
+def authority(host: str, port: int) -> str:
+    """``host:port`` for a URL, bracketing an IPv6 literal as RFC 3986 requires.
+
+    Public because any caller that resolves a probe host with :func:`probe_host`
+    must also format it, and ``f"{host}:{port}"`` produces the unparseable
+    ``http://::1:8787/`` for the exact address family :func:`probe_host` exists
+    to get right.
+    """
     if ":" in host:
         return f"[{host}]:{port}"
     return f"{host}:{port}"
@@ -301,7 +320,7 @@ def _probe_health(
 ) -> tuple[str, str | None]:
     """``GET /healthz`` on *host*:*port*. Returns ``(outcome, instance_id)``.
 
-    *host* comes from :func:`_probe_host` and is the host the gateway was
+    *host* comes from :func:`probe_host` and is the host the gateway was
     configured to bind, not a constant. When it is the name ``localhost`` it is
     passed through as a name on purpose: ``http.client`` walks every
     ``getaddrinfo`` result, so a gateway on ``::1`` is reached even where the
@@ -324,7 +343,7 @@ def _probe_health(
         non-JSON body, or JSON without an ``instance_id``. Some other service
         owns the port.
     """
-    url = f"http://{_authority(host, port)}/healthz"
+    url = f"http://{authority(host, port)}/healthz"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             raw = response.read(64 * 1024)
@@ -501,8 +520,8 @@ def status(config: AutoRouterConfig | None = None) -> Status:
     config = _resolve_config(config)
     state_dir = config.gateway.state_dir
     # Resolved once, from configuration, and threaded through every probe below.
-    # A hardcoded 127.0.0.1 here orphaned an IPv6-bound gateway: see _probe_host.
-    host = _probe_host(config)
+    # A hardcoded 127.0.0.1 here orphaned an IPv6-bound gateway: see probe_host.
+    host = probe_host(config)
 
     try:
         record = read_runtime(state_dir)
@@ -540,7 +559,7 @@ def status(config: AutoRouterConfig | None = None) -> Status:
             port=record.port,
             pid=record.pid,
             detail=(
-                f"running on {_authority(host, record.port)} "
+                f"running on {authority(host, record.port)} "
                 f"(instance {record.instance_id}, pid {record.pid})"
             ),
             kind=STATUS_RUNNING,
@@ -557,7 +576,7 @@ def status(config: AutoRouterConfig | None = None) -> Status:
             port=record.port,
             pid=None,
             detail=(
-                f"another gateway owns {_authority(host, record.port)}: it reports "
+                f"another gateway owns {authority(host, record.port)}: it reports "
                 f"instance {answered}, the runtime file records "
                 f"{record.instance_id}. Nothing was stopped or removed -- that "
                 f"process does not belong to this install."
@@ -572,7 +591,7 @@ def status(config: AutoRouterConfig | None = None) -> Status:
             port=record.port,
             pid=None,
             detail=(
-                f"something is listening on {_authority(host, record.port)} but it is "
+                f"something is listening on {authority(host, record.port)} but it is "
                 f"not a hermes-auto gateway (no usable /healthz). Nothing was "
                 f"stopped or removed."
             ),
@@ -591,7 +610,7 @@ def status(config: AutoRouterConfig | None = None) -> Status:
             port=record.port,
             pid=record.pid,
             detail=(
-                f"a process holds {_authority(host, record.port)} but did not "
+                f"a process holds {authority(host, record.port)} but did not "
                 f"answer /healthz within {HEALTH_TIMEOUT_SECONDS}s. The runtime "
                 f"file was left in place: a loaded gateway looks like this, and "
                 f"removing it would strand a live process. On Windows this can "
@@ -620,7 +639,7 @@ def status(config: AutoRouterConfig | None = None) -> Status:
         port=record.port,
         pid=None,
         detail=(
-            f"not running: nothing holds {_authority(host, record.port)}. "
+            f"not running: nothing holds {authority(host, record.port)}. "
             + (
                 "The stale runtime file was removed."
                 if removed
@@ -816,7 +835,7 @@ def _request_admin_shutdown(
         )
 
     request = urllib.request.Request(
-        f"http://{_authority(host, admin_port)}/admin/v1/shutdown", method="POST"
+        f"http://{authority(host, admin_port)}/admin/v1/shutdown", method="POST"
     )
     request.add_header("Authorization", f"Bearer {token}")
     try:
@@ -920,7 +939,7 @@ def stop(
     """
     config = _resolve_config(config)
     logger = get_logger("hermes_auto.supervisor")
-    host = _probe_host(config)
+    host = probe_host(config)
 
     current = status(config)
     if current.kind in (STATUS_FOREIGN, STATUS_UNRESPONSIVE):

@@ -37,6 +37,8 @@ import asyncio
 import urllib.parse
 from dataclasses import dataclass
 
+from ..telemetry.redaction import sanitize_url
+
 __all__ = ["ProbeResult", "check_upstream_reachable", "upstream_endpoint"]
 
 #: Default ceiling for a readiness probe. Short: a readiness endpoint that hangs
@@ -52,10 +54,18 @@ class ProbeResult:
     """Outcome of one reachability probe.
 
     ``reason`` is written for a human reading ``/readyz`` output or ``doctor``,
-    and never contains a credential: it is built from the *configured* URL's host
-    and port, which are operator-supplied configuration, and from exception
-    types rather than exception strings. An ``httpx``/``socket`` exception string
-    can contain a full URL, and a full URL can contain an embedded credential.
+    and never contains a credential. Two rules keep that true, and the second
+    exists because the first was not sufficient on its own:
+
+    * **No foreign exception strings.** An ``httpx``/``socket`` exception string
+      can contain a full URL, and a full URL can contain an embedded
+      credential, so those exceptions contribute their *type* and nothing else.
+    * **URLs are sanitized, not trusted for being configuration.** The reason is
+      built from the configured URL's host and port. Being operator-supplied
+      does not make a URL non-secret -- ``https://user:pw@host/v1`` is legal --
+      and ``/readyz`` is served **unauthenticated**, so its body is readable by
+      any local process. The one branch that reports a *malformed* URL routes it
+      through :func:`~hermes_auto.telemetry.redaction.sanitize_url` first.
     """
 
     ready: bool
@@ -72,15 +82,30 @@ def upstream_endpoint(base_url: str) -> tuple[str, int]:
     Raises:
         ValueError: *base_url* has no host, or a port that is not a number in
             range. Both are configuration errors worth failing loudly on.
+
+    The raised message quotes the **sanitized** URL. This function is exported,
+    its ValueError is rendered verbatim into the unauthenticated ``/readyz``
+    body, and a URL malformed enough to reach these branches can still carry a
+    well-formed userinfo section -- ``https://user:pw@/v1`` has no host and a
+    complete credential.
     """
     parsed = urllib.parse.urlsplit(base_url)
-    host = parsed.hostname
+    try:
+        host = parsed.hostname
+    except ValueError as exc:
+        raise ValueError(
+            f"upstream base_url is not a parseable URL: {sanitize_url(base_url)!r}"
+        ) from exc
     if not host:
-        raise ValueError(f"upstream base_url has no host: {base_url!r}")
+        raise ValueError(
+            f"upstream base_url has no host: {sanitize_url(base_url)!r}"
+        )
     try:
         port = parsed.port
     except ValueError as exc:
-        raise ValueError(f"upstream base_url has an invalid port: {base_url!r}") from exc
+        raise ValueError(
+            f"upstream base_url has an invalid port: {sanitize_url(base_url)!r}"
+        ) from exc
     if port is None:
         port = _DEFAULT_PORTS.get(parsed.scheme.lower(), 80)
     return host, port

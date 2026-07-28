@@ -29,6 +29,16 @@ destroy. When the salt is unavailable, :func:`session_digest` raises
 :class:`RedactionError` and :func:`redact` **drops** the identifier rather than
 emitting anything in its place.
 
+Three record surfaces are filtered, not one: ``record.msg``, ``record.args``,
+and any attribute that arrived via ``logging``'s ``extra=``. The third was
+missing originally and is worth naming, because it is invisible: ``extra`` keys
+are copied onto the record as *attributes* by ``Logger.makeRecord``, so they are
+neither ``msg`` nor ``args`` and a formatter that filters only those two lets
+them straight through. A banned ``extra`` key has its value replaced by
+:data:`EXTRA_REDACTED` rather than removed -- an attribute a format string names
+cannot simply vanish without raising inside the formatter, which ``logging``
+would swallow, costing the whole record.
+
 Scope, stated honestly: this sink redacts *structured* records. It matches
 banned keys by exact name, case-folded -- not by substring, because
 ``token_count``, ``prompt_tokens`` and ``completion_tokens`` are precisely the
@@ -48,17 +58,17 @@ import logging
 import os
 import pathlib
 import secrets
-import subprocess
-import sys
 import threading
+import urllib.parse
 
-# Windows allocates a fresh console window for a console-subsystem child when the
-# parent has no console of its own. CREATE_NO_WINDOW suppresses it; it is absent on
-# POSIX, hence getattr.
-_NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# This module no longer spawns anything. The icacls call it used to make -- and
+# the CREATE_NO_WINDOW flag that call needed to avoid flashing a console window
+# at the user on every mint -- now live in `gateway.auth`, which owns the single
+# per-platform implementation of restrictive creation and readback.
 
 __all__ = [
     "BANNED_KEYS",
+    "EXTRA_REDACTED",
     "RedactionError",
     "SALT_FILENAME",
     "SESSION_ID_KEYS",
@@ -66,6 +76,7 @@ __all__ = [
     "get_logger",
     "install_salt",
     "redact",
+    "sanitize_url",
     "session_digest",
 ]
 
@@ -118,6 +129,24 @@ SESSION_HASH_KEY = "root_session_hash"
 #: Key listing what was dropped at a given nesting level.
 _REDACTED_KEY = "_redacted"
 
+#: Value substituted for a banned key supplied via ``logging``'s ``extra=``.
+#: A *substitution* rather than a removal: ``extra`` keys become record
+#: attributes, and a format string naming an attribute that no longer exists
+#: raises ``KeyError`` inside the formatter. ``logging`` catches that and prints
+#: a traceback instead of the record, so removing the attribute would convert a
+#: redaction into a silently missing log line.
+EXTRA_REDACTED = "<redacted>"
+
+#: Attributes every ``LogRecord`` carries. Anything outside this set arrived via
+#: ``extra=`` and is therefore caller-supplied payload that the sink must filter.
+#: Derived from a real record rather than hardcoded, so a new stdlib field does
+#: not start being treated as user data. ``message`` and ``asctime`` are added
+#: because ``Formatter.format`` sets them on the record it is given.
+_STANDARD_RECORD_FIELDS = frozenset(logging.makeLogRecord({}).__dict__) | {
+    "message",
+    "asctime",
+}
+
 #: Recursion ceiling. A logging path must terminate on adversarial input, and a
 #: ``RecursionError`` escaping here would turn an observability call into the
 #: outage this module is written to avoid.
@@ -136,6 +165,44 @@ _salt_cache: dict[pathlib.Path, bytes] = {}
 _salt_lock = threading.Lock()
 
 
+def sanitize_url(url: str) -> str:
+    """Return *url* with any embedded userinfo removed.
+
+    The project's single implementation, for the same reason ``secure_write``
+    is: a URL is rendered into operator- and client-visible output from four
+    places -- the 502 body, the ``gateway.started`` record, the ``/readyz``
+    reason, and ``/admin/v1/status`` -- and four copies of a stripping rule
+    would drift, with the drifted copies being the ones nobody re-checked.
+
+    ``upstream.credential_ref`` accepts only ``env:NAME`` or ``none``, so a
+    credential should never reach ``base_url``. But ``https://user:pw@host/v1``
+    is a legal URL and config is operator-supplied, so "should never" is a
+    convention rather than a control; ``config.py`` now also rejects userinfo at
+    load, and this is the layer that holds for a config built in-process.
+
+    Host, port, path, query and fragment are all preserved: an error message
+    that hid *which* endpoint failed would have traded a disclosure for an
+    unusable diagnostic. Never raises -- every caller is already on an error
+    path, and a sanitizer that could raise would turn a 502 into a 500.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+        username, password = parts.username, parts.password
+        hostname, port = parts.hostname, parts.port
+    except ValueError:
+        # urlsplit is lazy: a malformed port or bracketed host raises on
+        # attribute access, not on the split itself.
+        return "<unparseable>"
+    if username is None and password is None:
+        return url
+    host = hostname or ""
+    if port is not None:
+        host = f"{host}:{port}"
+    return urllib.parse.urlunsplit(
+        (parts.scheme, host, parts.path, parts.query, parts.fragment)
+    )
+
+
 def _default_state_dir() -> pathlib.Path:
     """Resolve the state directory using stdlib only.
 
@@ -149,52 +216,52 @@ def _default_state_dir() -> pathlib.Path:
     return pathlib.Path.home() / ".hermes" / "auto-router"
 
 
-def _restrict_permissions(path: pathlib.Path) -> None:
-    """Apply the same permission treatment the bearer token gets.
+def _auth_module():
+    """Return ``hermes_auto.gateway.auth``, imported at call time.
 
-    On POSIX the mode is set at creation time by :func:`os.open`; this call is
-    a no-op reassertion there. On Windows ``os.chmod`` moves only the read-only
-    bit and leaves inherited ACLs intact, so a ``0o600`` call silently leaves
-    the file readable by every other account on the machine. ``icacls`` is the
-    only thing that actually narrows it.
+    Deferred rather than module-level for the reason given in this module's
+    docstring: the stdlib-only default for ``directory`` exists so that importing
+    this module never drags in ``state.paths``. ``gateway.auth`` imports
+    ``state.paths``, so a top-level import here would quietly undo that. The same
+    deferral is used by ``gateway/upstream.py`` for ``health.probe``.
+
+    Resolved through the module object rather than by binding the two functions
+    at import time so a test can monkeypatch ``auth.secure_write`` and have this
+    call site see it -- which is how the readback below is proven to run.
+    """
+    from ..gateway import auth
+
+    return auth
+
+
+def _restrict_permissions(path: pathlib.Path) -> None:
+    """Read back the permissions of *path* and raise unless they are owner-only.
+
+    The writing half now belongs to ``gateway.auth.secure_write``; this is only
+    the verification. Both halves used to live here as a second, private copy of
+    the platform logic, and ``auth``'s docstring predicted exactly what happened
+    to it:
+
+        Three copies of platform permission logic would drift, and the two that
+        drifted would be the two nobody re-verified.
+
+    It drifted in two ways. ``auth`` grants ``DOMAIN\\user`` before falling back
+    to the bare account name, because on a machine where a local and a domain
+    account share a name the bare form is ambiguous; this copy only ever used the
+    bare form. And this copy treated ``icacls`` exiting 0 as success, with **no
+    readback at all** -- while ``auth`` exists to say that a permission which has
+    not been read back is a permission that has not been set.
 
     Failure raises rather than warning. A salt whose permissions could not be
-    narrowed is the failure mode this module exists to prevent, and there is no
+    verified is the failure mode this module exists to prevent, and there is no
     degraded mode to fall back to that is not simply "no protection".
     """
-    if sys.platform != "win32":
-        os.chmod(path, 0o600)
-        return
-
-    account = os.environ.get("USERNAME") or os.environ.get("USER")
-    if not account:
+    ok, reason = _auth_module().permissions_ok(path)
+    if not ok:
         raise RedactionError(
-            f"{path}: cannot restrict permissions -- neither USERNAME nor USER "
-            f"is set, so there is no account to grant. Refusing to leave the "
-            f"salt with inherited ACLs."
-        )
-
-    try:
-        completed = subprocess.run(
-            [
-                "icacls",
-                str(path),
-                "/inheritance:r",
-                "/grant:r",
-                f"{account}:F",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            creationflags=_NO_CONSOLE_WINDOW,
-        )
-    except OSError as exc:  # icacls absent or not executable
-        raise RedactionError(f"{path}: could not run icacls: {exc}") from exc
-
-    if completed.returncode != 0:
-        raise RedactionError(
-            f"{path}: icacls failed with exit {completed.returncode}: "
-            f"{completed.stderr.strip() or completed.stdout.strip()}"
+            f"{path}: salt permissions could not be verified as owner-only "
+            f"({reason}). A readable salt makes every root_session_hash "
+            f"precomputable, so this is refused rather than warned about."
         )
 
 
@@ -293,33 +360,40 @@ def _load_or_create_salt(state_dir: pathlib.Path) -> bytes:
         ) from exc
 
     salt = secrets.token_bytes(_SALT_BYTES)
+    auth = _auth_module()
 
-    # O_EXCL rather than a plain open: if a second process created the salt
-    # between the exists() check above and here, the loser of that race must
-    # adopt the winner's salt. Writing over it would give the two processes
-    # different digests for the same session, which is the one corruption mode
-    # that would be invisible in the output.
+    # Claim the path atomically *before* writing it. O_EXCL is the race arbiter:
+    # if a second process created the salt between the exists() check above and
+    # here, the loser of that race must adopt the winner's salt. Two processes
+    # with different salts produce different digests for the same session, which
+    # is the one corruption mode that would be invisible in the output.
+    #
+    # The claim cannot be folded into secure_write: secure_write deliberately
+    # unlinks any pre-existing file so that its own O_EXCL is meaningful, which
+    # is right for a token being re-minted and wrong for a salt that must never
+    # be replaced once another process may have read it.
     try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
     except FileExistsError:
         return _read_salt_file(path)
     except OSError as exc:
         raise RedactionError(f"{path}: salt file could not be created: {exc}") from exc
 
     try:
-        with os.fdopen(descriptor, "w", encoding="ascii") as handle:
-            handle.write(salt.hex())
-            handle.flush()
-            os.fsync(handle.fileno())
-    except OSError as exc:
-        raise RedactionError(f"{path}: salt file could not be written: {exc}") from exc
-
-    try:
+        # The project's single implementation of restrictive creation, rather
+        # than a second private copy of os.open()+icacls. See
+        # _restrict_permissions for what the copy that used to live here got
+        # wrong.
+        try:
+            auth.secure_write(path, salt.hex().encode("ascii"))
+        except auth.AuthError as exc:
+            raise RedactionError(f"{path}: salt file could not be written: {exc}") from exc
         _restrict_permissions(path)
     except RedactionError:
-        # A salt that exists but is world-readable is worse than no salt file,
-        # because the next call would read it back and trust it. Remove it so
-        # the failure stays loud instead of curing itself on retry.
+        # A salt that exists but is not verifiably owner-only is worse than no
+        # salt file, because the next call takes the exists() branch, reads it
+        # back and trusts it -- poisoning every later digest on this install.
+        # Remove it so the failure stays loud instead of curing itself on retry.
         try:
             path.unlink()
         except OSError:
@@ -527,7 +601,41 @@ class RedactingFormatter(logging.Formatter):
                 redact(item, directory=self._directory) for item in record.args
             )
 
+        # `extra=` keys are copied onto the record as attributes by
+        # Logger.makeRecord, so they are neither `msg` nor `args` and used to
+        # pass through a sink whose whole purpose is that nothing reaches the
+        # output unfiltered. No call site in this project passes `extra=` today;
+        # that is a property of today's code and not one any test enforced, and
+        # a boundary with a hole everyone politely avoids is a convention.
+        for key, value in record.__dict__.items():
+            if key in _STANDARD_RECORD_FIELDS:
+                continue
+            if key.casefold() in BANNED_KEYS:
+                setattr(safe, key, EXTRA_REDACTED)
+            else:
+                setattr(safe, key, redact(value, directory=self._directory))
+
         return super().format(safe)
+
+
+LOG_LEVEL_ENV = "HERMES_AUTO_LOG_LEVEL"
+
+
+def _apply_level(logger: logging.Logger) -> None:
+    """Set an explicit level so the sink actually runs.
+
+    Without this the logger is NOTSET and inherits root's WARNING, so every
+    ``.info()`` record in the gateway is discarded *before* reaching the
+    formatter -- the redaction sink never executes, and "no raw prompt in the
+    log" passes on an empty file rather than on a redacted one.
+
+    An unrecognised value falls back to INFO rather than raising: the level is
+    not a security property, a typo in an env var must not fail app composition,
+    and unlike the salt the fallback is visible in the output.
+    """
+    configured = os.environ.get(LOG_LEVEL_ENV, "INFO")
+    level = logging.getLevelName(str(configured).strip().upper())
+    logger.setLevel(level if isinstance(level, int) else logging.INFO)
 
 
 def get_logger(
@@ -548,13 +656,26 @@ def get_logger(
     """
     logger = logging.getLogger(name)
     logger.propagate = False
+    _apply_level(logger)
 
-    if not any(
-        isinstance(handler.formatter, RedactingFormatter)
+    existing = [
+        handler
         for handler in logger.handlers
-    ):
+        if isinstance(handler.formatter, RedactingFormatter)
+    ]
+    if not existing:
         handler = logging.StreamHandler()
         handler.setFormatter(RedactingFormatter(directory=directory))
         logger.addHandler(handler)
+    elif directory is not None:
+        # A repeat call must not silently keep the first call's directory. app.py
+        # calls get_logger() with no directory during create_app and *then* with
+        # one inside lifespan, so last-configured has to win or the salt is read
+        # from the default path regardless of gateway.state_dir. ``None`` means
+        # "no opinion" and never downgrades a directory already configured.
+        for handler in existing:
+            current = getattr(handler.formatter, "_directory", None)
+            if current != directory:
+                handler.setFormatter(RedactingFormatter(directory=directory))
 
     return logger

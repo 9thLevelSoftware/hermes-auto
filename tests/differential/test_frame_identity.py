@@ -733,23 +733,25 @@ def test_the_corpus_contains_no_integer_error_code() -> None:
     assert all(isinstance(code, str) for code in codes.values())
 
 
-def test_an_integer_error_code_fails_the_schema_but_not_the_relay() -> None:
-    """The decision: the **schema** is wrong, not the assertion.
+def test_an_integer_error_code_is_accepted_and_relayed_verbatim() -> None:
+    """The closure this plan reported has been made; the tripwire it left is spent.
 
     ``openai-error.v1``'s own description calls itself a RELAY schema and says a
     closed object "would reject traffic the gateway is required to pass
-    through". ``code: ["string", "null"]`` is exactly such a closure, applied to
-    a named field: a provider that puts an HTTP status there emits a body the
-    gateway relays correctly and byte-for-byte, but which
-    ``assert_error_body`` rejects. The failure would therefore be in a contract
-    test, not in the gateway -- and the fix is to widen the schema to
-    ``["string", "integer", "null"]``, not to weaken the assertion, which is the
-    only thing checking the two fields that *are* required.
+    through". ``code: ["string", "null"]`` was exactly such a closure applied to
+    a named field: some OpenAI-compatible relays put an HTTP status there, and
+    such a body is one the gateway relays correctly and byte-for-byte while
+    ``assert_error_body`` rejected it. So the failure was in a contract test
+    rather than in the gateway, and the fix was to widen the schema to
+    ``["string", "integer", "null"]`` rather than to weaken the assertion --
+    which is the only thing checking the two fields that *are* required.
 
-    ``src/`` is forbidden to this plan, so the change is reported rather than
-    made. **This test is a tripwire:** it fails the moment the schema is widened,
-    which is the intended fix. Whoever widens it should delete this test and note
-    the closure in the summary.
+    The predecessor of this test asserted the *rejection*, deliberately, as a
+    tripwire that would fail the moment the schema was widened. It has been
+    deleted rather than edited into agreement with the new behavior, because a
+    tripwire quietly retargeted at its own fix proves nothing. What survives
+    unchanged is its relay half: the gateway never parses the body, so an
+    integer code must still reach the caller exactly as the provider wrote it.
     """
     integer_code = {
         "error": {
@@ -759,14 +761,21 @@ def test_an_integer_error_code_fails_the_schema_but_not_the_relay() -> None:
             "code": 429,
         }
     }
-    with pytest.raises(jsonschema.ValidationError) as caught:
-        assert_error_body(integer_code)
-    assert "is not of type 'string', 'null'" in caught.value.message
 
-    # The same body with a string code, and with the code absent, both pass --
-    # so the rejection is about the type and not about the envelope.
+    # The widened schema accepts it. This is the assertion that replaces the
+    # tripwire, and it fails against the pre-widening schema.
+    assert_error_body(integer_code)
+
+    # The neighbouring shapes still pass, so the widening did not dissolve the
+    # field's type constraint into "anything".
     assert_error_body({"error": {"message": "m", "type": "t", "code": "429"}})
     assert_error_body({"error": {"message": "m", "type": "t"}})
+    assert_error_body({"error": {"message": "m", "type": "t", "code": None}})
+
+    # A code that is neither string, integer nor null is still a violation:
+    # widening by one type is not the same as removing the constraint.
+    with pytest.raises(jsonschema.ValidationError):
+        assert_error_body({"error": {"message": "m", "type": "t", "code": [429]}})
 
     # And the relay itself is indifferent: the gateway never parses the body,
     # so an integer code reaches the caller exactly as the provider wrote it.

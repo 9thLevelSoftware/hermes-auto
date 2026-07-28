@@ -57,7 +57,7 @@ def _expand(value: str | os.PathLike[str]) -> pathlib.Path:
 
 
 def _ensure_dir(path: pathlib.Path) -> pathlib.Path:
-    """Create ``path`` if absent, owner-only on POSIX.
+    """Create ``path`` if absent, restrictively on **both** platforms.
 
     The explicit ``chmod`` after ``mkdir`` is not redundant: ``mkdir``'s ``mode``
     argument is masked by the process umask, so a umask of ``0o022`` would leave
@@ -65,6 +65,29 @@ def _ensure_dir(path: pathlib.Path) -> pathlib.Path:
     on a *pre-existing* directory would leave whatever mode it already had. The
     chmod is applied only to directories this call created, so an operator who
     deliberately widened an existing state directory is not overridden silently.
+
+    **The ``mode`` argument is load-bearing on Windows and must not be removed.**
+    The ``os.name == "posix"`` guard below covers only the ``chmod``; it does not
+    mean Windows gets nothing. CPython honours ``mode`` in ``os.mkdir`` on
+    Windows, where ``0o700`` blocks ACL inheritance -- measured on the
+    development machine, a directory created under ``C:\\`` with ``mode=0o700``
+    carries only ``SYSTEM``, ``Administrators`` and ``OWNER RIGHTS``, while the
+    same directory created with the default mode inherits
+    ``BUILTIN\\Users:(RX)`` and ``NT AUTHORITY\\Authenticated Users:(M)``.
+
+    That difference is the whole protection. ``Authenticated Users:(M)`` on a
+    directory carries ``FILE_DELETE_CHILD``, which permits deleting a file
+    regardless of *that file's* own DACL, and ``gateway/admin.py`` re-reads
+    ``admin-token`` on every request -- so an inherited ACL here would let any
+    local account substitute the admin token and hold the admin scope, with the
+    token's own ``icacls`` grant entirely bypassed.
+    ``tests/unit/test_state_dir_permissions.py`` pins this, because the mode
+    argument looks decorative next to a POSIX-gated chmod and would be an easy
+    thing to "simplify" away.
+
+    A *pre-existing* directory is deliberately left as it is, on both platforms.
+    ``doctor``'s "state directory permissions" check reports one that is broadly
+    writable rather than silently rewriting an operator's choice.
     """
     already_existed = path.is_dir()
     path.mkdir(parents=True, exist_ok=True, mode=DIR_MODE)

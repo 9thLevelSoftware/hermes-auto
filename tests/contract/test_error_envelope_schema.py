@@ -187,8 +187,11 @@ def test_relay_openness_is_declared_not_incidental(schemas):
             id="param-neither-string-nor-null",
         ),
         pytest.param(
-            {"error": {"message": "m", "type": "t", "code": 429}},
-            id="code-neither-string-nor-null",
+            # An integer code is *accepted* -- see
+            # test_an_integer_code_is_accepted_because_relays_emit_one below.
+            # A list is not: the field was widened by one type, not opened.
+            {"error": {"message": "m", "type": "t", "code": [429]}},
+            id="code-neither-string-integer-nor-null",
         ),
         pytest.param([CONTEXT_LENGTH_EXCEEDED], id="top-level-array"),
     ],
@@ -197,6 +200,24 @@ def test_malformed_error_bodies_are_rejected(body, validator):
     """Openness to unknown fields is not looseness about the known ones."""
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(body)
+
+
+def test_an_integer_code_is_accepted_because_relays_emit_one(validator):
+    """``error.code`` carries an HTTP status on some OpenAI-compatible relays.
+
+    This schema's own description warns that a closure here "would reject
+    traffic the gateway is required to pass through", and typing ``code`` as
+    ``["string", "null"]`` was such a closure: the gateway relays an
+    integer-coded body byte-for-byte, so the only thing that broke was the
+    contract test. Widening the schema was the fix; weakening
+    ``assert_error_body`` would have given up the checks on ``message`` and
+    ``type``, which are the fields that actually have to be there.
+    """
+    validator.validate({"error": {"message": "m", "type": "t", "code": 429}})
+    # Still nullable and still string-accepting: this widened the type union
+    # rather than replacing it.
+    validator.validate({"error": {"message": "m", "type": "t", "code": "429"}})
+    validator.validate({"error": {"message": "m", "type": "t", "code": None}})
 
 
 def test_a_chat_completion_is_not_an_error_envelope(validator):

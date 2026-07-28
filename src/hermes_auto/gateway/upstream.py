@@ -45,6 +45,7 @@ from typing import Any
 import httpx
 
 from ..config import AutoRouterConfig, UpstreamConfig
+from ..telemetry.redaction import sanitize_url
 from .errors import GatewayError
 
 __all__ = [
@@ -287,10 +288,24 @@ class UpstreamClient:
         """
         request = self._build(path, body, _as_pairs(headers))
         try:
-            response = await self._client.send(request, stream=False)
+            response = await self._client.send(request, stream=True)
         except httpx.HTTPError as exc:
             raise _connect_error(exc, self.config.base_url) from exc
-        return response.status_code, response.headers, response.content
+        # ``stream=True`` plus ``aiter_raw`` rather than ``response.content``:
+        # ``.content`` is *decoded*, while ``stream()`` relays raw bytes, and both
+        # verbs share one RESPONSE_DROP_HEADERS policy that keeps
+        # ``content-encoding`` and ``content-length``. A compressing upstream
+        # therefore put decoded bytes under a compressed length and the response
+        # aborted. Reading raw here keeps one header policy correct for both.
+        try:
+            chunks: list[bytes] = []
+            async for chunk in response.aiter_raw():
+                chunks.append(chunk)
+        except httpx.HTTPError as exc:
+            raise _connect_error(exc, self.config.base_url) from exc
+        finally:
+            await response.aclose()
+        return response.status_code, response.headers, b"".join(chunks)
 
     async def reachable(self, *, timeout: float = 2.0) -> Any:
         """Delegate to :mod:`hermes_auto.health.probe`. Returns a ``ProbeResult``.
@@ -319,13 +334,18 @@ def _connect_error(exc: httpx.HTTPError, base_url: str) -> GatewayError:
 
     502 rather than 500: the gateway is working, the thing behind it is not, and
     a client retry policy keyed on 5xx-versus-502 should be able to tell those
-    apart. The message names the configured URL -- which is operator-supplied
-    configuration, not a secret -- and the exception *type*, never its string,
-    which can contain a full URL with an embedded credential.
+    apart. The message names the exception *type*, never its string, which can
+    contain a full URL with an embedded credential.
+
+    It also names the configured URL -- **sanitized**. Being operator-supplied
+    configuration does not make it non-secret: ``https://user:pw@host/v1`` is a
+    legal URL, and this body goes to the *client*, who is not necessarily the
+    operator who wrote the config. Host and port survive so the message still
+    says which endpoint was unreachable.
     """
     return GatewayError(
         502,
-        f"upstream at {base_url} is unreachable ({type(exc).__name__})",
+        f"upstream at {sanitize_url(base_url)} is unreachable ({type(exc).__name__})",
         "api_error",
         code="upstream_unavailable",
     )

@@ -117,6 +117,19 @@ _DECOY_TOKEN = secrets.token_urlsafe(32)
 # ---------------------------------------------------------------------------
 
 
+def _safe_echo(value: str, *, limit: int = 64) -> str:
+    """Bound and sanitise a caller-supplied string before it enters an error body.
+
+    An error ``message`` is rendered to a terminal by the OpenAI SDK, so an
+    unbounded echo of a request header hands the caller the terminal. The
+    ``!r`` at the call site already reprs control bytes and h11 rejects them in
+    a header value, so this is defence in depth rather than a closed hole --
+    it pins the property instead of relying on either mechanism.
+    """
+    cleaned = "".join(ch for ch in value if ch.isprintable())
+    return cleaned if len(cleaned) <= limit else cleaned[:limit] + "..."
+
+
 def _validator_for(schema_id: str) -> Any:
     """Return a validator for *schema_id*, building it at most once per process.
 
@@ -249,8 +262,8 @@ async def enforce_limits(request: Request, max_bytes: int | None = None) -> byte
     if media_type not in _JSON_CONTENT_TYPES:
         raise GatewayError(
             415,
-            f"Unsupported content type {media_type or '<missing>'!r}; expected "
-            "application/json.",
+            f"Unsupported content type {_safe_echo(media_type) or '<missing>'!r}; "
+            "expected application/json.",
             "invalid_request_error",
             param="content-type",
             code="unsupported_media_type",
@@ -390,16 +403,17 @@ def validate_envelope(envelope: dict[str, Any]) -> None:
     try:
         envelope_validator().validate(envelope)
     except jsonschema.ValidationError as exc:
-        # exc.message names the failing keyword and the offending value's shape.
-        # The envelope carries no prompt content by schema construction -- it is
-        # a closed allowlist of five routing fields -- so echoing the path is
-        # safe. exc.instance is deliberately not echoed: root_session_id is in
-        # there, and it must never reach a client or a log unhashed.
+        # Report the failing keyword and the path, never exc.message. Avoiding
+        # exc.instance is not enough: for maxLength, minLength, type and
+        # additionalProperties, jsonschema embeds the offending instance *inside*
+        # exc.message, so formatting it echoed root_session_id -- and, on the type
+        # branch, an arbitrary caller-supplied object -- straight back to the
+        # client. This is the shape validate_request below already used.
         path = ".".join(str(part) for part in exc.absolute_path)
         raise GatewayError(
             400,
             f"{ENVELOPE_KEY} failed validation at "
-            f"{path or '<root>'}: {exc.message}",
+            f"{path or '<root>'} (constraint: {exc.validator}).",
             "invalid_request_error",
             param=f"{ENVELOPE_KEY}.{path}" if path else ENVELOPE_KEY,
             code="invalid_routing_metadata",
@@ -445,4 +459,11 @@ def encode_body(body: dict[str, Any]) -> bytes:
     escape -- which would triple the size of a CJK prompt and change the byte
     count the upstream sees for no reason.
     """
-    return json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    # ``surrogatepass`` rather than a bare ``encode``: a lone UTF-16 surrogate is
+    # legal RFC 8259 JSON and is what every ``ensure_ascii`` encoder emits, so a
+    # strict encode turns a request the provider would have accepted into a 500.
+    # Windows subprocess output decoded with ``errors="surrogateescape"`` reaches
+    # a tool result this way.
+    return json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8", "surrogatepass"
+    )

@@ -85,6 +85,37 @@ def _current_user() -> str:
     return os.environ.get("USERNAME") or getpass.getuser()
 
 
+def _accepted_principals() -> set[str]:
+    """Case-folded principal spellings that denote *this* account, and no other.
+
+    ``icacls`` echoes the **resolved** principal, so the spelling in its output
+    is not necessarily the spelling that was granted: a local account granted
+    bare comes back as ``COMPUTERNAME\\user``. All three forms below are
+    therefore accepted.
+
+    What is *not* accepted is a qualifier naming some other authority. Comparing
+    only the leaf after the final backslash -- which is what this check used to
+    do -- treats ``CORP\\dasbl`` and ``OTHERBOX\\dasbl`` as the current account,
+    which is exactly the ambiguity :func:`_restrict_windows_acl` grants the
+    domain-qualified form first in order to avoid. A verifier that discards the
+    qualifier undoes that.
+
+    Comparing by SID would be stronger still and needs no environment variables,
+    but reading a SID requires ``pywin32`` or parsing ``whoami /user`` -- a
+    dependency this phase refuses and a subprocess on a hot path respectively.
+    The qualified-string comparison closes the gap that was actually reachable.
+    """
+    user = _current_user()
+    accepted = {user.casefold()}
+    # USERDOMAIN is the logon authority; COMPUTERNAME is what a local account
+    # resolves to. On a workgroup machine they are equal, and on a domain-joined
+    # one a local account still resolves to COMPUTERNAME.
+    for qualifier in (os.environ.get("USERDOMAIN"), os.environ.get("COMPUTERNAME")):
+        if qualifier:
+            accepted.add(f"{qualifier}\\{user}".casefold())
+    return accepted
+
+
 def _run_icacls(args: list[str]) -> subprocess.CompletedProcess[str]:
     """Invoke ``icacls`` without a shell and without flashing a console window."""
     if shutil.which("icacls") is None:
@@ -146,11 +177,32 @@ def secure_write(path: pathlib.Path, data: bytes) -> None:
     Windows gets an ``icacls`` grant immediately after creation.
 
     A residual Windows exposure is recorded rather than papered over: between
-    ``os.open`` and the ``icacls`` call the file exists with inherited ACLs.
-    Closing that window needs a security descriptor supplied at creation, which
-    requires ``pywin32`` -- a dependency this phase refuses. The window is
-    microseconds inside a directory that is itself not world-writable, and
-    ``permissions_ok`` proves the end state. Do not claim it is closed.
+    ``os.open`` and the ``icacls`` call completing, the file exists with
+    inherited ACLs and the token already written into it. Closing that window
+    needs a security descriptor supplied at creation, which requires
+    ``pywin32`` -- a dependency this phase refuses. ``permissions_ok`` proves the
+    end state. Do not claim the window is closed.
+
+    **The window is milliseconds, not microseconds.** An earlier version of this
+    docstring said microseconds, which understated it by about four orders of
+    magnitude and made the residual sound like a formality. The token is not
+    merely created before ``icacls`` runs -- it is written, flushed **and
+    fsynced**, and ``os.fsync`` on Windows is ``_commit()``, a real disk
+    barrier. Measured on the development machine: ``open``+``write``+``flush``+
+    ``fsync`` alone is a median of 16 ms (range 6-31 ms), and the whole
+    ``secure_write`` including the ``icacls`` process spawn is a median of
+    188 ms (range 109-462 ms). A local process polling the state directory has
+    a wide window in which to read the file.
+
+    What bounds the exposure is the *directory*, not the timing: the state
+    directory is created with ``mode=0o700``, which on Windows blocks ACL
+    inheritance, so a directory this project created does not grant
+    ``Authenticated Users`` anything to exercise during the window. That is a
+    real control rather than an assumption -- see ``state/paths._ensure_dir``,
+    which explains why the ``mode`` argument is load-bearing there, and
+    ``doctor``'s "state directory permissions" check, which reports the case the
+    project does *not* control: a pre-existing directory it deliberately does
+    not re-narrow.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -219,7 +271,7 @@ def _windows_permissions_ok(path: pathlib.Path) -> tuple[bool, str]:
     # ACE parser sees a uniform `PRINCIPAL:(RIGHTS)` on every line.
     output = completed.stdout.replace(str(path), "", 1)
 
-    expected = _current_user().casefold()
+    accepted = _accepted_principals()
     aces: list[tuple[str, str]] = []
     for line in output.splitlines():
         match = _ACE_RE.match(line.strip())
@@ -229,10 +281,10 @@ def _windows_permissions_ok(path: pathlib.Path) -> tuple[bool, str]:
     if not aces:
         return False, "icacls returned no access-control entries to verify"
 
+    # The *whole* principal, not `rsplit("\\", 1)[-1]`. Matching on the leaf
+    # accepts a same-named account from any other authority.
     foreign = [
-        principal
-        for principal, _ in aces
-        if principal.rsplit("\\", 1)[-1].casefold() != expected
+        principal for principal, _ in aces if principal.casefold() not in accepted
     ]
     if foreign:
         return False, (
@@ -249,6 +301,96 @@ def _windows_permissions_ok(path: pathlib.Path) -> tuple[bool, str]:
         )
 
     return True, f"ACL grants only {_current_user()} ({len(aces)} entry set)"
+
+
+#: Principals that may appear on a *directory* without meaning that an ordinary
+#: local account can write into it. SYSTEM and Administrators can reach anything
+#: on the machine regardless of any ACL, so excluding them would report a risk
+#: that no ACL change could remove. ``OWNER RIGHTS`` and ``CREATOR OWNER`` denote
+#: the owner, which is the account this process runs as.
+_BENIGN_DIRECTORY_PRINCIPALS = frozenset(
+    {
+        "nt authority\\system",
+        "builtin\\administrators",
+        "owner rights",
+        "creator owner",
+    }
+)
+
+
+def directory_permissions_ok(path: pathlib.Path) -> tuple[bool, str]:
+    """Report whether *path* is writable only by this account and the system.
+
+    Separate from :func:`permissions_ok` because a directory legitimately
+    carries principals a *token file* must not: a directory created with
+    ``mode=0o700`` still shows SYSTEM, Administrators and OWNER RIGHTS, and
+    requiring "only the current user" there would report every correct install
+    as broken.
+
+    Why a directory's ACL is worth checking at all, given the token file has its
+    own: on Windows ``FILE_DELETE_CHILD`` on a directory permits deleting a file
+    **regardless of that file's own DACL**. ``admin.py`` re-reads ``admin-token``
+    on every request by design, so a local principal who can write the state
+    directory can *substitute* the admin token and hold the admin scope -- the
+    token's own permissions never enter into it.
+
+    ``state.paths`` narrows directories it creates (``os.mkdir``'s ``mode``
+    argument is honoured on Windows and blocks inheritance), but deliberately
+    does **not** re-narrow a directory that already existed, so that an operator
+    who widened one on purpose is not silently overridden. This function is how
+    that decision stays visible instead of merely unenforced.
+
+    POSIX returns the mode check, where the same reasoning applies to the write
+    bit for group and other.
+    """
+    if not path.exists():
+        return False, f"{path} does not exist"
+    if not path.is_dir():
+        return False, f"{path} is not a directory"
+
+    if os.name != "nt":
+        try:
+            mode = path.stat().st_mode & 0o777
+        except OSError as exc:
+            return False, f"permissions could not be read: {exc}"
+        if mode & 0o022:
+            return False, (
+                f"mode {mode:04o} lets group or other write into the state "
+                f"directory, which permits replacing the token files inside it"
+            )
+        return True, f"mode {mode:04o} (not group- or world-writable)"
+
+    try:
+        completed = _run_icacls([str(path)])
+    except FileNotFoundError:
+        return False, "icacls is not available on PATH; ACL could not be verified"
+    except subprocess.TimeoutExpired:
+        return False, "icacls did not complete; ACL could not be verified"
+    except OSError as exc:
+        return False, f"icacls could not be run ({exc}); ACL could not be verified"
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        return False, f"icacls failed: {detail[0] if detail else 'unknown error'}"
+
+    output = completed.stdout.replace(str(path), "", 1)
+    accepted = _accepted_principals() | _BENIGN_DIRECTORY_PRINCIPALS
+
+    foreign: list[str] = []
+    for line in output.splitlines():
+        match = _ACE_RE.match(line.strip())
+        if match:
+            principal = match["principal"].strip()
+            if principal.casefold() not in accepted:
+                foreign.append(principal)
+
+    if foreign:
+        return False, (
+            "state directory is writable by " + ", ".join(sorted(set(foreign)))
+            + "; a principal who can write this directory can replace the token "
+            "files inside it regardless of their own permissions"
+        )
+    return True, f"ACL grants only {_current_user()} and the system accounts"
 
 
 def permissions_ok(path: pathlib.Path) -> tuple[bool, str]:
@@ -344,6 +486,7 @@ __all__ = [
     "AuthError",
     "secure_write",
     "permissions_ok",
+    "directory_permissions_ok",
     "mint_token",
     "read_token",
     "compare_token",
