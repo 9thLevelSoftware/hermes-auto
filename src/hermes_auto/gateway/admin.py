@@ -1,67 +1,9 @@
-"""The admin API: a second listener, a second secret, a second trust scope.
+"""The local admin API: a second listener, secret, and trust scope.
 
-`design.md` §5.3 asks for the administrative API on "a different authentication
-scope and preferably a separate local listener". `docs/threat-model.md` sharpens
-that into an obligation: Boundary 4 is the only surface that can change routing
-behavior at runtime, `/admin/v1/sessions/{id}/reroute` and `/pin` redirect every
-subsequent turn to a caller-chosen candidate, and **no `design.md` §21 row covers
-admin-scope privilege separation**. The residual risk was recorded in Phase 1 and
-assigned to this module.
-
-So the property this file exists to hold is narrow and testable:
-
-    Possession of the inference bearer token grants no admin capability.
-
-Four things enforce it, in order of how easily each could be lost:
-
-**1. A separate secret in a separate file.** ``<state_dir>/admin-token``, minted
-with the same ``secure_write`` that protects ``<state_dir>/token`` -- mode at
-creation on POSIX, ``icacls`` on Windows, both read back by ``permissions_ok``.
-This module never imports, reads, or falls back to the inference token. There is
-no code path here from which the inference token is even reachable.
-
-**2. Authentication is middleware, not a per-handler call.** Every request into
-this app is authenticated before routing, so a route added later is protected by
-construction rather than by the author remembering. That also means an
-unauthenticated caller cannot probe which admin paths exist: an unknown path
-returns 401, not 404.
-
-**3. Comparison goes through ``gateway.auth.compare_token``.** One constant-time
-implementation for the whole project. A second copy is a second thing to get
-wrong, and the one that drifted would be the one nobody re-verified.
-
-**4. An absent or unreadable admin token denies everything.** Note that
-``hmac.compare_digest(b"", b"")`` is **True**: a naive "compare the supplied
-credential against the expected one" fails *open* when no token exists and no
-header was sent. The absent case is therefore branched explicitly, and a decoy
-comparison is still performed so that "no token file" and "wrong token" do not
-separate under timing. The listener stays up in that state on purpose, so
-``doctor`` can report the cause rather than the operator seeing a refused
-connection with no explanation.
-
-**Not implemented is 501, never a stub success.** Four of the six §5.3 endpoints
-describe routing that does not exist until Phases 3, 4, 5 and 8. They return 501
-in the ``openai-error.v1`` envelope with ``type: "not_implemented"`` and a message
-naming the phase that delivers them. A fabricated success would be worse than an
-error: it would let a caller build against behavior that is not there, and the
-divergence would surface as a routing bug in a later phase rather than as a
-missing feature now.
-
-**No CORS, deliberately.** There is no ``CORSMiddleware`` in this app's stack and
-nothing here emits an ``Access-Control-Allow-*`` header. A permissive origin
-policy on a loopback control API is what turns "any page in your browser" into a
-caller that can shut the router down or reroute a session. 02-CONTEXT § Phase-Wide
-Constraints item 2 requires it; ``tests/contract/test_admin_api.py`` asserts it,
-because until this plan nothing in the suite did.
-
-**Shutdown is the primary stop path on every platform.** Windows has no
-``SIGTERM``, so plan 02-07's ``stop()`` POSTs here first and only then falls back
-to ``terminate``/``kill``. The handler sets ``should_exit`` on every
-``uvicorn.Server`` running in this process, which is uvicorn's graceful path: it
-stops accepting, asks each connection to close after its current response, and
-waits for in-flight tasks -- so a streaming completion finishes rather than being
-severed mid-frame. The 202 is returned before the drain completes, which is what
-makes 202 the honest status: accepted, not done.
+Possession of the inference bearer token grants no admin capability. The
+authenticated surface exposes health, bounded decision explanations, and
+graceful shutdown. It has no CORS middleware and no routing mutation, feedback,
+or telemetry endpoints.
 """
 
 from __future__ import annotations
@@ -83,13 +25,13 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..config import AutoRouterConfig, load_config
+from ..routing import DecisionRouter
 from ..state.paths import state_dir as resolve_state_dir
 from ..state.runtime import RuntimeFileError, read_runtime
 from ..telemetry.redaction import get_logger, redact, sanitize_url
 from .auth import AuthError, compare_token, permissions_ok, secure_write
 from .errors import (
     GatewayError,
-    error_body,
     error_response,
     gateway_error_handler,
     http_exception_handler,
@@ -99,7 +41,6 @@ from .errors import (
 __all__ = [
     "ADMIN_TOKEN_FILENAME",
     "ADMIN_TOKEN_ENTROPY_BYTES",
-    "NOT_IMPLEMENTED_TYPE",
     "AdminAuthMiddleware",
     "admin_token_path",
     "admin_token_permissions_ok",
@@ -118,11 +59,6 @@ ADMIN_TOKEN_FILENAME: str = "admin-token"
 #: characters.
 ADMIN_TOKEN_ENTROPY_BYTES: int = 32
 
-#: ``error.type`` on every endpoint that describes routing this phase does not
-#: have. Not an enum in ``openai-error.v1`` -- the schema deliberately leaves the
-#: value set open -- so this constant is the single spelling.
-NOT_IMPLEMENTED_TYPE: str = "not_implemented"
-
 #: One 401 message for every failure mode: absent header, malformed header, wrong
 #: token, inference token, no admin token file. It names the file a legitimate
 #: operator can read and says nothing about which of those cases occurred.
@@ -137,34 +73,6 @@ _DENIED_MESSAGE = (
 #: never accepted -- the absent case denies unconditionally regardless of the
 #: comparison's result.
 _DECOY_TOKEN = secrets.token_urlsafe(ADMIN_TOKEN_ENTROPY_BYTES)
-
-#: Route template -> (method, phase, what is missing). The message names the
-#: phase that delivers the endpoint and never echoes the caller's path parameter:
-#: reflecting an attacker-chosen ``session_id`` back into a response body is a
-#: gratuitous injection surface on an endpoint that does nothing else.
-_NOT_IMPLEMENTED: dict[str, tuple[str, str, str]] = {
-    "/admin/v1/decisions/{decision_id}": (
-        "GET",
-        "Phase 4",
-        "route decision records are not produced yet",
-    ),
-    "/admin/v1/sessions/{session_id}/reroute": (
-        "POST",
-        "Phase 5",
-        "session cache epochs do not exist yet",
-    ),
-    "/admin/v1/sessions/{session_id}/pin": (
-        "POST",
-        "Phase 3",
-        "there is no candidate inventory to pin to yet",
-    ),
-    "/admin/v1/feedback": (
-        "POST",
-        "Phase 8",
-        "the telemetry store does not exist yet",
-    ),
-}
-
 
 # ---------------------------------------------------------------------------
 # The admin token: a separate secret, in a separate file
@@ -443,10 +351,36 @@ async def status(request: Request) -> Response:
         "admin_port": admin_port,
         "started_at": started_at,
         "uptime_seconds": _uptime_seconds(started_at),
-        "upstream_base_url": _sanitize_url(config.upstream.base_url),
+        "upstream_base_url": _sanitize_url(
+            config.resolved_candidates[0].base_url
+        ),
+        "configured_candidate_count": len(config.resolved_candidates),
+        "most_recent_decision": (
+            state.router.latest_decision().public()
+            if state.router.latest_decision() is not None
+            else None
+        ),
         "strict_validation": config.gateway.strict_validation,
     }
     return JSONResponse(redact(payload, directory=state.salt_dir))
+
+
+async def decision(request: Request) -> Response:
+    """Return a prompt-free explanation for a session or the latest route."""
+    session_id = request.path_params.get("session_id", "")
+    router: DecisionRouter = request.app.state.router
+    if session_id == "latest":
+        found = router.latest_decision()
+    else:
+        found = router.decision_for(str(session_id))
+    if found is None:
+        return error_response(
+            404,
+            "No in-memory routing decision is available for that session.",
+            "invalid_request_error",
+            code="decision_not_found",
+        )
+    return JSONResponse(found.public())
 
 
 def _running_uvicorn_servers() -> list[Any]:
@@ -543,37 +477,6 @@ async def shutdown(request: Request) -> Response:
     )
 
 
-def _not_implemented(template: str) -> Callable[[Request], Any]:
-    """Build the handler for one endpoint this phase does not deliver."""
-    method, phase, reason = _NOT_IMPLEMENTED[template]
-    message = (
-        f"{method} {template} is not implemented in Phase 2: {reason}. "
-        f"It is delivered in {phase}. The Phase 2 gateway forwards every request "
-        f"to one fixed upstream and performs no routing."
-    )
-
-    async def handler(request: Request) -> Response:
-        # `template`, never `request.path_params`. Echoing a caller-chosen
-        # decision_id or session_id back into a response body buys nothing and
-        # hands an attacker a reflection primitive on an endpoint that otherwise
-        # has no behavior at all.
-        return JSONResponse(
-            error_body(
-                message,
-                NOT_IMPLEMENTED_TYPE,
-                param=None,
-                code=NOT_IMPLEMENTED_TYPE,
-            ),
-            status_code=501,
-        )
-
-    # A deterministic name derived from the path, not from `hash()`, whose seed
-    # is randomized per process: two runs must produce the same endpoint names.
-    slug = template.strip("/").replace("/", "_").replace("{", "").replace("}", "")
-    handler.__name__ = f"not_implemented_{slug}"
-    return handler
-
-
 # ---------------------------------------------------------------------------
 # Composition
 # ---------------------------------------------------------------------------
@@ -583,6 +486,7 @@ def create_admin_app(
     config: AutoRouterConfig | None = None,
     *,
     request_exit: Callable[[], None] | None = None,
+    decision_router: DecisionRouter | None = None,
 ) -> Starlette:
     """Build the admin ASGI app. Pure -- no sockets, no token read, no I/O.
 
@@ -640,13 +544,13 @@ def create_admin_app(
 
     routes = [
         Route("/admin/v1/status", status, methods=["GET"]),
+        Route(
+            "/admin/v1/decisions/{session_id}",
+            decision,
+            methods=["GET"],
+        ),
         Route("/admin/v1/shutdown", shutdown, methods=["POST"]),
     ]
-    routes += [
-        Route(template, _not_implemented(template), methods=[spec[0]])
-        for template, spec in _NOT_IMPLEMENTED.items()
-    ]
-
     app = Starlette(
         routes=routes,
         # AdminAuthMiddleware only. No CORSMiddleware, now or ever: a permissive
@@ -665,6 +569,7 @@ def create_admin_app(
     # handler reached without a lifespan fails on a 401 rather than an
     # AttributeError.
     app.state.config = config
+    app.state.router = decision_router or DecisionRouter(config.resolved_candidates)
     app.state.state_dir = config.gateway.state_dir
     app.state.salt_dir = None
     app.state.request_exit = request_exit

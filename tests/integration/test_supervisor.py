@@ -20,6 +20,7 @@ every test after it.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import dataclasses
 import json
 import os
@@ -30,6 +31,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
+from ctypes import wintypes
 
 import httpx
 import pytest
@@ -94,6 +96,35 @@ def _write_config(
 #: developer running the suite. 0 on POSIX, where subprocess rejects any other
 #: value for this argument.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _visible_windows() -> dict[int, tuple[str, str]]:
+    """Return visible top-level window class/title pairs on Windows."""
+    if os.name != "nt":
+        return {}
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+    )
+    visible: dict[int, tuple[str, str]] = {}
+
+    @callback_type
+    def collect(hwnd: int, _lparam: int) -> bool:
+        if not user32.IsWindowVisible(hwnd):
+            return True
+
+        title_length = user32.GetWindowTextLengthW(hwnd)
+        title = ctypes.create_unicode_buffer(title_length + 1)
+        user32.GetWindowTextW(hwnd, title, len(title))
+
+        class_name = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, class_name, len(class_name))
+        visible[int(hwnd)] = (class_name.value, title.value)
+        return True
+
+    user32.EnumWindows(collect, 0)
+    return visible
 
 
 def _spawn_gateway(
@@ -181,6 +212,28 @@ def test_start_produces_a_running_gateway_with_an_instance_id(harness: Harness) 
     # listener", which would make graceful drain unreachable.
     assert record.admin_port != 0
     assert record.admin_port != record.port
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows console-window behavior")
+def test_start_does_not_open_a_visible_terminal_window(harness: Harness) -> None:
+    """A virtualenv redirector must not expose its second interpreter's console."""
+    before = set(_visible_windows())
+
+    state = supervisor.start(timeout=STARTUP_TIMEOUT)
+    assert state.running
+
+    opened = {
+        handle: details
+        for handle, details in _visible_windows().items()
+        if handle not in before
+    }
+    visible_python_terminals = {
+        handle: details
+        for handle, details in opened.items()
+        if details[0] == "CASCADIA_HOSTING_WINDOW_CLASS"
+        and pathlib.Path(details[1]).name.casefold() == "python.exe"
+    }
+    assert visible_python_terminals == {}
 
 
 def test_healthz_reports_the_answering_process_not_the_file(harness: Harness) -> None:
@@ -663,8 +716,8 @@ def test_slash_auto_status_reports_real_state(harness: Harness) -> None:
     assert "not running" in plugin.slash_auto("status")
     supervisor.start(timeout=STARTUP_TIMEOUT)
     assert "running on" in plugin.slash_auto("status")
-    # Anything else says so rather than answering a different question.
-    assert "not available" in plugin.slash_auto("explain")
+    # Explain is real, and reports honestly when no request has been routed yet.
+    assert "No routing decision" in plugin.slash_auto("explain")
 
 
 def test_the_runtime_file_is_written_only_after_both_binds(harness: Harness) -> None:

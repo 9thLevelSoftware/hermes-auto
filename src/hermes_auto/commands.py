@@ -56,6 +56,7 @@ from typing import Any
 from . import supervisor
 from .compatibility import CompatibilityStatus, check_compatibility
 from .config import AutoRouterConfig, ConfigError, load_config
+from .discovery import DiscoveredModel, discover_hermes_models, suggested_tier
 from .provider import PROVIDER_NAME, TOKEN_ENV_VAR
 from .version import __version__
 
@@ -66,6 +67,9 @@ __all__ = [
     "LEVEL_OK",
     "LEVEL_WARN",
     "cmd_doctor",
+    "cmd_configure",
+    "cmd_explain",
+    "cmd_overview",
     "cmd_restart",
     "cmd_setup",
     "cmd_start",
@@ -73,6 +77,7 @@ __all__ = [
     "cmd_stop",
     "control_plugin_enabled",
     "enable_control_plugin",
+    "enable_model_alias",
     "hermes_config_path",
     "installed_shim_version",
     "run_doctor",
@@ -247,6 +252,16 @@ def _plan_edit(text: str, document: dict[str, Any]) -> str | None:
         if not stripped or stripped.startswith("#"):
             continue
         indent = len(raw) - len(raw.lstrip())
+        # PyYAML emits a valid indentless sequence:
+        #
+        #   enabled:
+        #   - existing-plugin
+        #
+        # Its item is aligned with the key, rather than indented beneath it.
+        if stripped.startswith("- ") and indent == len(enabled_indent):
+            item_indent = " " * indent
+            insert_at = index + 1
+            continue
         if indent <= len(enabled_indent):
             break
         if stripped.startswith("- "):
@@ -256,6 +271,7 @@ def _plan_edit(text: str, document: dict[str, Any]) -> str | None:
 
 
 def _atomic_write_text(target: pathlib.Path, text: str) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
     handle, temp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".hermes-auto-", suffix=".tmp")
     temp_path = pathlib.Path(temp_name)
     try:
@@ -267,6 +283,70 @@ def _atomic_write_text(target: pathlib.Path, text: str) -> None:
     except BaseException:
         temp_path.unlink(missing_ok=True)
         raise
+
+
+def _atomic_write_bytes(target: pathlib.Path, content: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(
+        dir=str(target.parent), prefix=".hermes-auto-", suffix=".tmp"
+    )
+    temp_path = pathlib.Path(temp_name)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, target)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _setup_snapshots(
+    hermes_home: str | os.PathLike[str] | None,
+    state_dir: Any,
+) -> dict[pathlib.Path, bytes | None]:
+    """Capture every active file setup may change for transaction rollback."""
+    from .gateway.admin import admin_token_path
+    from .hermes_shim.installer import control_installed_paths, installed_path
+    from .state.paths import token_path
+
+    config_path = hermes_config_path(hermes_home)
+    paths = [
+        token_path(state_dir, create=False),
+        admin_token_path(state_dir, create=False),
+        installed_path(hermes_home),
+        *control_installed_paths(hermes_home),
+        config_path,
+        config_path.with_name(f"{config_path.name}.hermes-auto.bak"),
+        config_path.with_name(f"{config_path.name}.hermes-auto-alias.bak"),
+    ]
+    snapshots: dict[pathlib.Path, bytes | None] = {}
+    for path in paths:
+        try:
+            snapshots[path] = path.read_bytes()
+        except FileNotFoundError:
+            snapshots[path] = None
+    return snapshots
+
+
+def _rollback_setup(snapshots: dict[pathlib.Path, bytes | None]) -> list[str]:
+    """Restore the setup transaction. Return paths that could not be restored."""
+    failures: list[str] = []
+    for path, previous in snapshots.items():
+        try:
+            if previous is None:
+                path.unlink(missing_ok=True)
+                continue
+            try:
+                current = path.read_bytes()
+            except FileNotFoundError:
+                current = None
+            if current != previous:
+                _atomic_write_bytes(path, previous)
+        except OSError:
+            failures.append(str(path))
+    return failures
 
 
 def enable_control_plugin(
@@ -288,7 +368,9 @@ def enable_control_plugin(
     path = hermes_config_path(hermes_home)
     document, text, error = _load_yaml(path)
     if document is None:
-        return False, f"{error}; {_MANUAL_INSTRUCTION}"
+        if path.exists():
+            return False, f"{error}; {_MANUAL_INSTRUCTION}"
+        document, text = {}, ""
 
     already, detail = control_plugin_enabled(hermes_home)
     if already:
@@ -344,6 +426,62 @@ def enable_control_plugin(
         f"added {CONTROL_PLUGIN_NAME} to plugins.enabled in {path} "
         f"(previous contents saved as {backup.name})"
     )
+
+
+def enable_model_alias(
+    hermes_home: str | os.PathLike[str] | None = None,
+    *,
+    base_url: str,
+) -> tuple[bool, str]:
+    """Install the literal ``/model auto`` direct alias without changing defaults."""
+    path = hermes_config_path(hermes_home)
+    document, text, error = _load_yaml(path)
+    if document is None:
+        if path.exists():
+            return False, error
+        document, text = {}, ""
+
+    aliases = document.get("model_aliases")
+    if aliases is None:
+        aliases = {}
+        document["model_aliases"] = aliases
+    if not isinstance(aliases, dict):
+        return False, f"{path}: model_aliases must be a mapping"
+
+    expected = {
+        "model": "auto",
+        "provider": PROVIDER_NAME,
+        "base_url": base_url,
+    }
+    if aliases.get("auto") == expected:
+        return True, f"literal model alias `auto` is already configured in {path}"
+    aliases["auto"] = expected
+
+    import yaml
+
+    edited = yaml.safe_dump(
+        document,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    )
+    backup = path.with_name(f"{path.name}.hermes-auto-alias.bak")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            backup.write_text(text, encoding="utf-8", newline="")
+        _atomic_write_text(path, edited)
+        verified, _, verify_error = _load_yaml(path)
+        if verified != document:
+            raise OSError(verify_error or "written configuration did not verify")
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            if text:
+                _atomic_write_text(path, text)
+            else:
+                path.unlink(missing_ok=True)
+        return False, f"{path} could not be updated ({exc})"
+    return True, f"configured literal `/model auto` alias in {path}"
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +571,7 @@ def cmd_setup(
     config: AutoRouterConfig | None = None,
     stream: Any = None,
 ) -> int:
-    """Install the provider shim, mint the tokens, and enable the control plugin.
+    """Install both home shims, tokens, control plugin, and literal Auto alias.
 
     This is the command that makes the provider exist. ``pip install`` does not
     register anything -- see the module docstring -- and neither does declaring
@@ -441,13 +579,31 @@ def cmd_setup(
     """
     out = _Printer(stream)
     try:
-        config = config if config is not None else load_config(None)
+        if config is None and hermes_home is not None:
+            target_config = hermes_config_path(hermes_home)
+            document, _, error = _load_yaml(target_config)
+            if document is None:
+                if target_config.exists():
+                    raise ConfigError(error)
+                config = AutoRouterConfig()
+            elif "auto_router" in document:
+                config = load_config(target_config)
+            else:
+                config = AutoRouterConfig(source_path=target_config)
+        elif config is None:
+            config = load_config(None)
     except ConfigError as exc:
         out.line(f"FAILED: configuration is unusable: {exc}")
         return 2
 
+    try:
+        snapshots = _setup_snapshots(hermes_home, config.gateway.state_dir)
+    except OSError as exc:
+        out.line(f"FAILED: setup transaction could not be prepared: {exc}")
+        return 2
+
     from .gateway.auth import mint_token, read_token, token_permissions_ok
-    from .hermes_shim.installer import InstallError, install
+    from .hermes_shim.installer import InstallError, install, install_control
 
     failures = 0
 
@@ -457,7 +613,7 @@ def cmd_setup(
         "This step is what registers the provider with Hermes. Hermes discovers "
         "model providers by scanning $HERMES_HOME/plugins/model-providers, so "
         "`pip install hermes-auto-router` alone registers nothing and the model "
-        "`auto:balanced` would fail with 'unknown provider hermes-auto'."
+        "`auto` would fail with 'unknown provider hermes-auto'."
     )
     out.line("")
 
@@ -491,16 +647,40 @@ def cmd_setup(
 
     # --- the provider shim ------------------------------------------------
     try:
-        target = install(hermes_home)
+        target = install(
+            hermes_home,
+            base_url=config.gateway.url.rstrip("/") + "/v1",
+        )
         out.line(f"provider shim  installed at {target}")
     except (InstallError, ConfigError) as exc:
         out.line(f"provider shim  FAILED: {exc}")
+        failures += 1
+
+    try:
+        control_init, control_manifest = install_control(hermes_home)
+        out.line(
+            "control shim   installed at "
+            f"{control_init} (manifest: {control_manifest.name})"
+        )
+    except InstallError as exc:
+        out.line(f"control shim   FAILED: {exc}")
         failures += 1
 
     # --- the control plugin ----------------------------------------------
     enabled, detail = enable_control_plugin(hermes_home)
     out.line(f"control plugin {'enabled' if enabled else 'NOT ENABLED'}: {detail}")
     if not enabled:
+        failures += 1
+
+    alias_enabled, alias_detail = enable_model_alias(
+        hermes_home,
+        base_url=config.gateway.url.rstrip("/") + "/v1",
+    )
+    out.line(
+        f"model alias    {'configured' if alias_enabled else 'NOT CONFIGURED'}: "
+        f"{alias_detail}"
+    )
+    if not alias_enabled:
         failures += 1
 
     out.line("")
@@ -523,8 +703,319 @@ def cmd_setup(
 
     if failures:
         out.line("")
-        out.line(f"setup finished with {failures} problem(s); see above.")
+        rollback_failures = _rollback_setup(snapshots)
+        if rollback_failures:
+            out.line(
+                f"setup failed with {failures} problem(s), and rollback could "
+                "not restore: "
+                + ", ".join(rollback_failures)
+            )
+        else:
+            out.line(
+                f"setup failed with {failures} problem(s); all setup-managed "
+                "files were restored to their previous state."
+            )
         return 1
+    return 0
+
+
+def _candidate_id(provider: str, model: str, used: set[str]) -> str:
+    import re
+
+    base = re.sub(r"[^a-z0-9._-]+", "-", f"{provider}-{model}".lower()).strip("-")
+    base = base[:64] or "candidate"
+    value = base
+    suffix = 2
+    while value in used:
+        ending = f"-{suffix}"
+        value = base[: 64 - len(ending)] + ending
+        suffix += 1
+    used.add(value)
+    return value
+
+
+def _candidate_from_discovery(
+    model: DiscoveredModel,
+    tier: str,
+    used_ids: set[str],
+) -> Any:
+    from .config import CandidateConfig
+
+    return CandidateConfig(
+        id=_candidate_id(model.provider, model.model, used_ids),
+        provider=model.provider,
+        model=model.model,
+        base_url=model.base_url,
+        credential_ref=(
+            f"env:{model.credential_env_var}"
+            if model.credential_env_var
+            else "none"
+        ),
+        tier=tier,
+        context_window=model.context_window,
+        supports_tools=model.supports_tools,
+        supports_vision=model.supports_vision,
+    )
+
+
+def _write_candidate_config(
+    hermes_home: str | os.PathLike[str] | None,
+    candidates: tuple[Any, ...],
+) -> tuple[bool, str]:
+    path = hermes_config_path(hermes_home)
+    document, text, error = _load_yaml(path)
+    if document is None:
+        if path.exists():
+            return False, error
+        document, text = {}, ""
+    root = document.get("auto_router")
+    if root is None:
+        root = {}
+        document["auto_router"] = root
+    if not isinstance(root, dict):
+        return False, f"{path}: auto_router must be a mapping"
+    root.pop("upstream", None)
+    root["candidates"] = [dataclasses.asdict(candidate) for candidate in candidates]
+
+    import yaml
+
+    rendered = yaml.safe_dump(
+        document,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    )
+    backup = path.with_name(f"{path.name}.hermes-auto-configure.bak")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            backup.write_text(text, encoding="utf-8", newline="")
+        _atomic_write_text(path, rendered)
+        # Reuse the production loader as the post-write verification.
+        load_config(path)
+    except (OSError, ConfigError) as exc:
+        with contextlib.suppress(OSError):
+            if text:
+                _atomic_write_text(path, text)
+            else:
+                path.unlink(missing_ok=True)
+        return False, f"{path} was left unchanged ({exc})"
+    return True, f"wrote {len(candidates)} approved candidate(s) to {path}"
+
+
+def _manual_candidate(input_fn: Any, used_ids: set[str]) -> Any | None:
+    from .config import CandidateConfig
+
+    provider = input_fn("Provider id (blank to finish): ").strip()
+    if not provider:
+        return None
+    model = input_fn("Provider model id: ").strip()
+    base_url = input_fn("OpenAI-compatible base URL: ").strip()
+    credential_ref = input_fn(
+        "Credential reference (env:NAME or none): "
+    ).strip()
+    tier = input_fn("Tier (fast, balanced, strong): ").strip().lower()
+    context_window = int(input_fn("Context window: ").strip())
+    supports_tools = input_fn("Supports tools? [y/N]: ").strip().lower() == "y"
+    supports_vision = input_fn("Supports vision? [y/N]: ").strip().lower() == "y"
+    return CandidateConfig(
+        id=_candidate_id(provider, model, used_ids),
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        credential_ref=credential_ref,
+        tier=tier,
+        context_window=context_window,
+        supports_tools=supports_tools,
+        supports_vision=supports_vision,
+    )
+
+
+def _admin_json(
+    path: str,
+    config: AutoRouterConfig | None = None,
+) -> tuple[int, dict[str, Any] | None]:
+    """Read one authenticated admin endpoint without exposing either token."""
+    resolved = config if config is not None else load_config(None)
+    from .gateway.admin import read_admin_token
+    from .state.runtime import RuntimeFileError, read_runtime
+
+    try:
+        runtime = read_runtime(resolved.gateway.state_dir)
+        token = read_admin_token(resolved.gateway.state_dir)
+    except (RuntimeFileError, OSError):
+        return 0, None
+    if runtime is None or runtime.admin_port <= 0 or not token:
+        return 0, None
+    host = supervisor.probe_host(resolved)
+    url = f"http://{supervisor.authority(host, runtime.admin_port)}{path}"
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3.0) as response:
+            status = response.status
+            raw = response.read(64 * 1024)
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        raw = exc.read(64 * 1024)
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return 0, None
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    return status, payload if isinstance(payload, dict) else None
+
+
+def cmd_configure(
+    *,
+    hermes_home: str | os.PathLike[str] | None = None,
+    stream: Any = None,
+    input_fn: Any = None,
+) -> int:
+    """Discover suggestions, then write only a user-confirmed shortlist."""
+    out = _Printer(stream)
+    ask = input if input_fn is None else input_fn
+    result = discover_hermes_models(hermes_home=hermes_home)
+    if result.warning:
+        out.line(f"warning: {result.warning}")
+    for index, model in enumerate(result.models, 1):
+        variable = model.credential_env_var or "none"
+        out.line(
+            f"{index}. {model.provider}/{model.model} "
+            f"({model.context_window} context, credential {variable}, "
+            f"suggested tier {suggested_tier(model.model)})"
+        )
+
+    selected: list[Any] = []
+    used_ids: set[str] = set()
+    try:
+        if result.models:
+            raw = ask(
+                "Select suggestion numbers separated by commas, or m for manual: "
+            ).strip()
+            if raw.lower() != "m":
+                indexes = [int(item.strip()) for item in raw.split(",") if item.strip()]
+                for index in indexes:
+                    model = result.models[index - 1]
+                    suggestion = suggested_tier(model.model)
+                    tier = ask(
+                        f"Tier for {model.provider}/{model.model} "
+                        f"[{suggestion}]: "
+                    ).strip().lower() or suggestion
+                    selected.append(
+                        _candidate_from_discovery(model, tier, used_ids)
+                    )
+        manual_mode = not result.models or (
+            result.models and raw.lower() == "m"
+        )
+        while manual_mode:
+            manual = _manual_candidate(ask, used_ids)
+            if manual is None:
+                break
+            selected.append(manual)
+    except (EOFError, KeyboardInterrupt, StopIteration, ValueError, IndexError) as exc:
+        out.line(f"configuration cancelled ({type(exc).__name__})")
+        return 1
+
+    if not selected:
+        out.line("configuration cancelled: no candidates were approved")
+        return 1
+    if len(selected) == 1:
+        out.line(
+            "warning: Auto needs at least two candidates for meaningful selection"
+        )
+    out.line("")
+    out.line("Final shortlist (credential references only; no credential values):")
+    for candidate in selected:
+        out.line(
+            f"- {candidate.id}: {candidate.provider}/{candidate.model} "
+            f"[{candidate.tier}] {candidate.credential_ref}"
+        )
+    try:
+        confirmed = ask("Write this shortlist? [y/N]: ").strip().lower() == "y"
+    except (EOFError, KeyboardInterrupt, StopIteration):
+        confirmed = False
+    if not confirmed:
+        out.line("configuration cancelled; no files were changed")
+        return 1
+    ok, detail = _write_candidate_config(hermes_home, tuple(selected))
+    out.line(detail)
+    return 0 if ok else 1
+
+
+def _print_decision(out: Any, decision: dict[str, Any]) -> None:
+    out.line(
+        f"selected: {decision.get('selected_candidate')} "
+        f"({decision.get('selected_tier')})"
+    )
+    out.line(
+        f"detected complexity: {decision.get('detected_tier')} "
+        f"(score {decision.get('complexity_score')})"
+    )
+    out.line(f"estimated input: {decision.get('estimated_input_tokens')} tokens")
+    for item in decision.get("filters", ()) or ():
+        if isinstance(item, dict):
+            reasons = ", ".join(str(value) for value in item.get("reasons", ()))
+            out.line(f"filtered {item.get('candidate')}: {reasons}")
+    for item in decision.get("fallback_attempts", ()) or ():
+        if isinstance(item, dict):
+            out.line(
+                f"fallback {item.get('candidate')}: {item.get('reason')}"
+            )
+    out.line(f"pinned: {decision.get('pinned') or 'no'}")
+
+
+def cmd_explain(
+    *,
+    session_id: str = "latest",
+    config: AutoRouterConfig | None = None,
+    stream: Any = None,
+) -> int:
+    out = _Printer(stream)
+    status, payload = _admin_json(
+        f"/admin/v1/decisions/{session_id or 'latest'}",
+        config,
+    )
+    if status != 200 or payload is None:
+        out.line("No routing decision is available from the running gateway.")
+        return 1
+    _print_decision(out, payload)
+    return 0
+
+
+def cmd_overview(
+    *,
+    config: AutoRouterConfig | None = None,
+    stream: Any = None,
+) -> int:
+    out = _Printer(stream)
+    try:
+        resolved = config if config is not None else load_config(None)
+        state = supervisor.status(resolved)
+    except (ConfigError, supervisor.SupervisorError) as exc:
+        out.line(f"Auto status unavailable: {exc}")
+        return 1
+    out.line(state.detail)
+    status, payload = _admin_json("/admin/v1/status", resolved)
+    if status == 200 and payload is not None:
+        out.line(
+            f"configured candidates: {payload.get('configured_candidate_count', len(resolved.resolved_candidates))}"
+        )
+        recent = payload.get("most_recent_decision")
+        if isinstance(recent, dict):
+            out.line(
+                f"most recent: {recent.get('selected_candidate')} "
+                f"({recent.get('selected_tier')})"
+            )
+        else:
+            out.line("most recent: none since gateway start")
+    else:
+        out.line(f"configured candidates: {len(resolved.resolved_candidates)}")
+        out.line("most recent: unavailable (gateway is not running)")
     return 0
 
 

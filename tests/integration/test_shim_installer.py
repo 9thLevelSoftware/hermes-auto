@@ -579,10 +579,11 @@ def test_shim_profile_fields_match_the_provider_profile(
     assert shim_profile.api_mode == "chat_completions"
     assert shim_profile.supports_vision is True
     assert shim_profile.supports_health_check is True
-    assert shim_profile.default_aux_model == "auto:balanced"
+    assert shim_profile.default_aux_model == "auto"
     assert shim_profile.fallback_models == (
-        "auto:quality",
+        "auto",
         "auto:balanced",
+        "auto:quality",
         "auto:economy",
         "auto:session",
     )
@@ -670,6 +671,7 @@ def test_real_hermes_discovers_the_installed_provider(
     assert result["name"] == "hermes-auto"
     assert result["base_url"] == "http://127.0.0.1:8787/v1"
     assert set(result["fallback_models"]) == {
+        "auto",
         "auto:quality",
         "auto:balanced",
         "auto:economy",

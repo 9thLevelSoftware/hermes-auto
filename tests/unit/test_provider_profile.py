@@ -178,9 +178,9 @@ def test_plugin_version_is_the_distribution_version() -> None:
     assert build_envelope()["plugin_version"] == __version__
 
 
-def test_absent_virtual_model_defaults_to_balanced() -> None:
-    assert build_envelope()["virtual_model"] == "auto:balanced"
-    assert build_envelope(virtual_model="")["virtual_model"] == "auto:balanced"
+def test_absent_virtual_model_defaults_to_literal_auto() -> None:
+    assert build_envelope()["virtual_model"] == "auto"
+    assert build_envelope(virtual_model="")["virtual_model"] == "auto"
 
 
 @pytest.mark.parametrize("field", ["root_session_id", "virtual_model"])
@@ -291,10 +291,13 @@ def test_profile_identity_fields(profile: Any) -> None:
     assert profile.description
 
 
-def test_profile_registers_all_four_virtual_models(profile: Any) -> None:
+def test_profile_registers_literal_auto_first_with_compatibility_models(
+    profile: Any,
+) -> None:
     assert AUTO_MODELS == (
-        "auto:quality",
+        "auto",
         "auto:balanced",
+        "auto:quality",
         "auto:economy",
         "auto:session",
     )

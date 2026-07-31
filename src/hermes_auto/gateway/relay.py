@@ -62,21 +62,6 @@ async def relay_stream(upstream_iter: AsyncIterator[bytes]) -> AsyncIterator[byt
         than on the chunk sequence.
     """
     async for chunk in upstream_iter:
-        # ---------------------------------------------------------------
-        # COMMIT BARRIER EXTENSION POINT (design.md 8.2) -- Phase 6 attaches here.
-        #
-        # 8.2 says the route is committed once the first valid SSE event has
-        # been sent to Hermes, and that before that point the gateway may
-        # transparently fail over. The observation "a first chunk is about to
-        # reach the client" is available at exactly this line and nowhere else.
-        #
-        # Deliberately a marked place and not an abstraction: a hook, a
-        # callback parameter, or a Protocol added now would be shaped by
-        # guesswork about a failover path that does not exist yet, and the
-        # empty version of it would still cost this function a branch per
-        # chunk. Phase 6 has the failover policy in hand and can shape it then.
-        #
-        # Whatever attaches here must not consume, buffer, or inspect `chunk`
-        # beyond "it is non-empty" -- see this module's docstring.
-        # ---------------------------------------------------------------
+        # The gateway establishes its first-byte commit barrier before this
+        # iterator is handed to Starlette. From here onward bytes are immutable.
         yield chunk

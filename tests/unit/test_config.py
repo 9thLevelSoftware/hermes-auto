@@ -182,38 +182,33 @@ def test_a_bare_file_without_the_auto_router_wrapper_is_accepted(
     assert load_config(source).gateway.startup_timeout_seconds == 3
 
 
-def test_sibling_blocks_owned_by_later_phases_are_ignored(
+def test_retired_research_configuration_is_rejected(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A complete design.md 16 config must remain loadable in Phase 2.
-
-    ``routing``, ``constraints``, ``candidates``, ``telemetry`` and ``learning``
-    belong to Phases 3-8. Rejecting them as unknown would mean the documented
-    configuration cannot be loaded by the code that ships first.
-    """
+    """The active product accepts only gateway, candidates, and legacy upstream."""
     source = write_config(
         tmp_path / "config.yaml",
         """
         auto_router:
-          protocol_version: 1
-          mode: balanced
           gateway:
             startup_timeout_seconds: 7
-          routing:
-            stickiness: cache_boundary
-          constraints:
-            local_only: false
           candidates:
             - id: local-fast
+              provider: local
+              model: local-model
+              base_url: http://127.0.0.1:11434/v1
               credential_ref: none
-          telemetry:
-            retain_days: 30
+              tier: fast
+              context_window: 128000
+              supports_tools: true
+              supports_vision: false
           learning:
             requirement_predictor: heuristic
         """,
     )
 
-    assert load_config(source).gateway.startup_timeout_seconds == 7
+    with pytest.raises(ConfigError, match="learning"):
+        load_config(source)
 
 
 # ---------------------------------------------------------------------------
@@ -356,16 +351,14 @@ def test_literal_credential_is_rejected_with_an_actionable_message(
     assert config.CREDENTIAL_REF_PATTERN in message
 
 
-def test_credential_ref_pattern_matches_the_phase_1_model_card_schema() -> None:
-    """Two notions of "safe credential reference" would be one too many."""
-    schema = (
-        pathlib.Path(config.__file__).resolve().parent
-        / "data"
-        / "schema"
-        / "routing"
-        / "model-card.v1.schema.json"
-    )
-    assert config.CREDENTIAL_REF_PATTERN in schema.read_text(encoding="utf-8")
+def test_credential_ref_pattern_is_the_focused_contract() -> None:
+    """The exported pattern accepts only none or an environment reference."""
+    import re
+
+    pattern = re.compile(config.CREDENTIAL_REF_PATTERN)
+    assert pattern.fullmatch("none")
+    assert pattern.fullmatch("env:PROVIDER_KEY")
+    assert not pattern.fullmatch("literal-secret")
 
 
 @pytest.mark.parametrize(

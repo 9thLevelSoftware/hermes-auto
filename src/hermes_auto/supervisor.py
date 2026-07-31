@@ -8,8 +8,8 @@ is downstream of that answer.
 records a PID, and this module never trusts it for a liveness decision. It issues
 ``GET /healthz`` on the recorded port and compares the ``instance_id`` in the
 response against the one in the file. ``/healthz`` deliberately reports the
-*answering process's own* id rather than re-reading the file (plan 02-04,
-``gateway/app.py``), which is what makes the mismatch branch reachable at all: if
+*answering process's own* id rather than re-reading the file, which is what makes
+the mismatch branch reachable at all: if
 both sides read the file they would agree by construction and the check would be
 decorative. Windows recycles PIDs within seconds, so a stale runtime file plus a
 recycled PID is not an exotic race -- it is the ordinary state of a machine after
@@ -43,8 +43,7 @@ before it will call a port free (:func:`_port_binding`).
 not a request. So the graceful rung is ``POST /admin/v1/shutdown``, which sets
 uvicorn's ``should_exit`` and lets in-flight streaming completions finish. The
 escalation below it is genuinely shorter on Windows than on POSIX, and that
-asymmetry is the reason the admin listener exists at all
-(02-CONTEXT § Supervision Contract).
+asymmetry is the reason the admin listener exists at all.
 
 **Killing by PID is permitted only after identity has just been confirmed.**
 ``stop`` re-probes ``/healthz`` and requires the recorded ``instance_id`` to still
@@ -68,8 +67,7 @@ retry is ordered that way round because ``CREATE_BREAKAWAY_FROM_JOB`` *fails*
 with access denied when the job does not permit breakaway, so it cannot be the
 first attempt.
 
-Scope: start on demand only. No systemd unit, launchd plist, or Windows Service
--- that is ``design.md`` §11.3 layer 2 and belongs to Phase 11.
+Scope: start on demand only. No systemd unit, launchd plist, or Windows Service.
 """
 
 from __future__ import annotations
@@ -674,19 +672,37 @@ def _spawn(config: AutoRouterConfig) -> tuple[subprocess.Popen[bytes], str]:
 
     attempts: list[tuple[str, dict[str, object]]] = []
     if os.name == "nt":
-        detached = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        # ``sys.executable`` may be a virtualenv redirector that launches the
+        # real interpreter as a second process.  DETACHED_PROCESS and
+        # CREATE_NO_WINDOW suppress a console only for the redirector; its child
+        # can still ask Windows Terminal for a visible window.  Give the
+        # redirector a separate hidden console instead.  The real interpreter
+        # inherits that console, so neither process can flash a terminal.
+        startup_info = subprocess.STARTUPINFO()
+        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup_info.wShowWindow = subprocess.SW_HIDE
+        new_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
         new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
         attempts.append(
-            ("detached+new_process_group", {"creationflags": detached | new_group})
+            (
+                "hidden_console+new_process_group",
+                {
+                    "creationflags": new_console | new_group,
+                    "startupinfo": startup_info,
+                },
+            )
         )
         # Only as a retry: CREATE_BREAKAWAY_FROM_JOB fails outright with access
         # denied when the containing job forbids breakaway, so leading with it
         # would break the common case to serve the CI one.
         attempts.append(
             (
-                "detached+new_process_group+breakaway_from_job",
-                {"creationflags": detached | new_group | breakaway},
+                "hidden_console+new_process_group+breakaway_from_job",
+                {
+                    "creationflags": new_console | new_group | breakaway,
+                    "startupinfo": startup_info,
+                },
             )
         )
     else:

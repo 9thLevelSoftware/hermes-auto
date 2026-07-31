@@ -1,12 +1,4 @@
-"""The single logging sink. Nothing in this project logs an event dict directly.
-
-``docs/privacy.md`` makes four prohibitions -- no raw prompt text, no tool-result
-bodies, no secrets, and session identifiers hashed with a local salt -- and then
-says plainly that **Phase 1 provides no structural backstop for them**, assigning
-the salting to ``telemetry/events.py`` in Phase 8. That is one phase too late:
-the gateway receives ``root_session_id`` inside the ``_hermes_auto`` envelope on
-the very first request it serves, so Phases 2 through 7 would each write leaking
-logs that then need auditing. This module is that backstop, brought forward.
+"""The single privacy-preserving logging sink.
 
 Two design choices carry the weight:
 
@@ -122,8 +114,7 @@ BANNED_KEYS = frozenset(
 #: :data:`SESSION_HASH_KEY` carrying the salted digest, never passed through.
 SESSION_ID_KEYS = frozenset({"root_session_id", "session_id"})
 
-#: The field name Phase 1 froze in both routing schemas, constrained there to
-#: ``^[0-9a-f]{64}$``. :func:`session_digest` produces exactly that shape.
+#: The public field name for the fixed-width salted digest.
 SESSION_HASH_KEY = "root_session_hash"
 
 #: Key listing what was dropped at a given nesting level.
@@ -414,9 +405,7 @@ def session_digest(
     form invites a length-extension question that a reviewer then has to reason
     about, and HMAC removes the question rather than answering it.
 
-    The output matches ``^[0-9a-f]{64}$``, the pattern Phase 1 froze on
-    ``root_session_hash`` in both ``outcome-event.v1`` and
-    ``route-decision.v1``.
+    The output matches ``^[0-9a-f]{64}$``.
 
     Args:
         session_id: The raw identifier. Never logged, never returned.

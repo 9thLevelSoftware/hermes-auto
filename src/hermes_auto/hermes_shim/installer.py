@@ -20,9 +20,18 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import sys
 import tempfile
 
+from hermes_auto.hermes_shim.control_template import (
+    CONTROL_MANIFEST,
+    CONTROL_MANIFEST_MARKER,
+    CONTROL_MARKER,
+    CONTROL_SOURCE,
+    render_control,
+    render_manifest,
+)
 from hermes_auto.hermes_shim.template import MARKER, SHIM_SOURCE, render
 from hermes_auto.provider import PROVIDER_NAME, TOKEN_ENV_VAR, gateway_base_url
 from hermes_auto.version import __version__
@@ -30,13 +39,17 @@ from hermes_auto.version import __version__
 __all__ = [
     "InstallError",
     "default_hermes_home",
+    "control_installed_paths",
     "install",
+    "install_control",
     "installed_path",
     "uninstall",
 ]
 
 _PLUGIN_SUBPATH = ("plugins", "model-providers", PROVIDER_NAME)
 _ENTRY_FILENAME = "__init__.py"
+_CONTROL_SUBPATH = ("plugins", "hermes-auto-control")
+_CONTROL_MANIFEST_FILENAME = "plugin.yaml"
 
 # Names tolerated inside the plugin directory when removing it on uninstall.
 # Hermes imports the shim, so CPython leaves a __pycache__ behind that this
@@ -113,6 +126,13 @@ def installed_path(
     side effect of putting it there.
     """
     return _resolve_home(hermes_home).joinpath(*_PLUGIN_SUBPATH, _ENTRY_FILENAME)
+
+
+def control_installed_paths(
+    hermes_home: str | os.PathLike[str] | None = None,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    directory = _resolve_home(hermes_home).joinpath(*_CONTROL_SUBPATH)
+    return directory / _ENTRY_FILENAME, directory / _CONTROL_MANIFEST_FILENAME
 
 
 def _read_existing(target: pathlib.Path) -> str | None:
@@ -217,6 +237,74 @@ def _atomic_write(target: pathlib.Path, source: str) -> None:
     except BaseException:
         temp_path.unlink(missing_ok=True)
         raise
+
+
+def _control_executable(
+    executable: str | os.PathLike[str] | None,
+) -> pathlib.Path:
+    if executable is not None:
+        resolved = pathlib.Path(executable).expanduser().resolve()
+    else:
+        found = shutil.which("hermes-auto")
+        if found:
+            resolved = pathlib.Path(found).resolve()
+        else:
+            name = "hermes-auto.exe" if os.name == "nt" else "hermes-auto"
+            resolved = pathlib.Path(sys.executable).with_name(name).resolve()
+    if not resolved.is_file():
+        raise InstallError(
+            "cannot install the control plugin: the absolute hermes-auto "
+            f"executable was not found at {resolved}"
+        )
+    return resolved
+
+
+def install_control(
+    hermes_home: str | os.PathLike[str] | None = None,
+    *,
+    executable: str | os.PathLike[str] | None = None,
+    plugin_version: str = __version__,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Atomically upgrade the dependency-free home-scoped control plugin."""
+    init_path, manifest_path = control_installed_paths(hermes_home)
+    targets = (
+        (init_path, CONTROL_MARKER),
+        (manifest_path, CONTROL_MANIFEST_MARKER),
+    )
+    previous: dict[pathlib.Path, str | None] = {}
+    for target, marker in targets:
+        content = _read_existing(target)
+        if content is not None and not content.startswith(marker):
+            raise InstallError(
+                f"refusing to overwrite {target}: it is not managed by "
+                "hermes-auto-router"
+            )
+        previous[target] = content
+
+    resolved = _control_executable(executable)
+    rendered = {
+        init_path: render_control(CONTROL_SOURCE, executable=str(resolved)),
+        manifest_path: render_manifest(
+            CONTROL_MANIFEST, plugin_version=plugin_version
+        ),
+    }
+    try:
+        init_path.parent.mkdir(parents=True, exist_ok=True)
+        for target, source in rendered.items():
+            _atomic_write(target, source)
+    except BaseException as exc:
+        for target, content in previous.items():
+            try:
+                if content is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    _atomic_write(target, content)
+            except OSError:
+                pass
+        if isinstance(exc, InstallError):
+            raise
+        raise InstallError(f"could not install the control plugin: {exc}") from exc
+    return init_path, manifest_path
 
 
 def uninstall(hermes_home: str | os.PathLike[str] | None = None) -> bool:

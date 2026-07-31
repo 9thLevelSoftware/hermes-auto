@@ -30,7 +30,17 @@ from hermes_auto import commands, supervisor
 from hermes_auto.cli import build_parser, main
 from hermes_auto.commands import CONTROL_PLUGIN_NAME, LEVEL_FAIL, LEVEL_OK
 
-REQUIRED_SUBCOMMANDS = {"setup", "start", "stop", "restart", "status", "doctor"}
+REQUIRED_SUBCOMMANDS = {
+    "setup",
+    "configure",
+    "explain",
+    "overview",
+    "start",
+    "stop",
+    "restart",
+    "status",
+    "doctor",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -331,10 +341,12 @@ def test_enabling_refuses_an_inline_list_and_names_the_manual_command(
     assert path.read_text(encoding="utf-8") == original, "the file must be untouched"
 
 
-def test_enabling_refuses_a_missing_or_broken_config(hermes_home: pathlib.Path) -> None:
+def test_enabling_creates_a_missing_config_but_refuses_a_broken_one(
+    hermes_home: pathlib.Path,
+) -> None:
     ok, detail = commands.enable_control_plugin(hermes_home)
-    assert not ok
-    assert f"hermes plugins enable {CONTROL_PLUGIN_NAME}" in detail
+    assert ok, detail
+    assert commands.control_plugin_enabled(hermes_home)[0]
 
     _write_config(hermes_home, "plugins: [this is\n  not: valid: yaml\n")
     ok, detail = commands.enable_control_plugin(hermes_home)
@@ -342,26 +354,16 @@ def test_enabling_refuses_a_missing_or_broken_config(hermes_home: pathlib.Path) 
     assert f"hermes plugins enable {CONTROL_PLUGIN_NAME}" in detail
 
 
-def test_the_enabled_name_matches_the_entry_point_key() -> None:
-    """Hermes matches ``plugins.enabled`` against the entry-point name.
+def test_enabled_name_matches_the_home_scoped_manifest(
+    hermes_home: pathlib.Path,
+) -> None:
+    from hermes_auto.hermes_shim.installer import install_control
+    import sys
+    import yaml
 
-    ``_scan_entry_points`` builds its manifest with ``name=ep.name``. If the
-    key written into config.yaml and the key in ``pyproject.toml`` ever differ,
-    the plugin is discovered, reported as "not enabled in config", and never
-    registers -- while both files look individually correct.
-    """
-    import tomllib
-
-    repo_root = pathlib.Path(__file__).resolve().parents[2]
-    with (repo_root / "pyproject.toml").open("rb") as handle:
-        document = tomllib.load(handle)
-    entry_points = document["project"]["entry-points"]["hermes_agent.plugins"]
-    assert CONTROL_PLUGIN_NAME in entry_points
-    assert entry_points[CONTROL_PLUGIN_NAME] == "hermes_auto.plugin"
-
-    from hermes_auto.plugin import PLUGIN_NAME
-
-    assert PLUGIN_NAME == CONTROL_PLUGIN_NAME
+    _, manifest = install_control(hermes_home, executable=sys.executable)
+    document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    assert document["name"] == CONTROL_PLUGIN_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -492,20 +494,15 @@ def test_the_plugin_cli_subparser_matches_the_console_script() -> None:
     assert names == set(build_parser()._subparsers._group_actions[0].choices)
 
 
-def test_only_the_slash_command_backed_by_real_behaviour_is_registered() -> None:
-    """Routing does not exist in this phase, so nothing may report it.
-
-    A command that answered ``/auto explain`` today would invent a decision that
-    was never made, and a user who trusts it once keeps trusting it after real
-    routing lands and the answers change meaning.
-    """
+def test_auto_slash_registers_overview_and_explain_only() -> None:
     from hermes_auto import plugin
 
     ctx = _RecordingContext()
     plugin.register(ctx)
     assert set(ctx.slash) == {"auto"}
 
-    for unimplemented in ("mode", "explain", "candidates", "pin", "reroute", "feedback"):
+    assert "routing decision" in plugin.slash_auto("explain")
+    for unimplemented in ("mode", "candidates", "pin", "reroute", "feedback"):
         reply = plugin.slash_auto(unimplemented)
         assert "not available" in reply, unimplemented
 
@@ -646,18 +643,18 @@ def test_supervisor_never_routes_child_output_to_a_pipe() -> None:
                     raise AssertionError("computed getattr name hides the target")
 
 
-def test_supervisor_spawns_detached_with_the_job_object_fallback() -> None:
-    """Replaces ``'DETACHED_PROCESS' in src or 'creationflags' in src``.
+def test_supervisor_uses_hidden_console_with_the_job_object_fallback() -> None:
+    """Pin the hidden-console strategy and the breakaway retry order.
 
-    The grep passes on a docstring. This asserts both Windows flag sets are
-    actually constructed and that the breakaway variant is a *retry*, not the
-    first attempt -- ``CREATE_BREAKAWAY_FROM_JOB`` fails with access denied when
-    the containing job forbids breakaway, so leading with it breaks the common
-    case to serve the CI one.
+    ``DETACHED_PROCESS`` hides only the virtualenv redirector; the real
+    interpreter it starts can still open a Windows Terminal window. A separate
+    console launched with ``SW_HIDE`` is inherited by both processes. The
+    breakaway variant remains a retry because ``CREATE_BREAKAWAY_FROM_JOB`` can
+    fail with access denied when the containing job forbids breakaway.
     """
     source = pathlib.Path(inspect.getfile(supervisor)).read_text(encoding="utf-8")
-    first = source.index("detached | new_group")
-    second = source.index("detached | new_group | breakaway")
+    first = source.index("new_console | new_group")
+    second = source.index("new_console | new_group | breakaway")
     assert first < second, "the breakaway flag set must be the retry, not the first try"
 
     names = {
@@ -670,7 +667,7 @@ def test_supervisor_spawns_detached_with_the_job_object_fallback() -> None:
         and isinstance(node.args[1], ast.Constant)
     }
     assert {
-        "DETACHED_PROCESS",
+        "CREATE_NEW_CONSOLE",
         "CREATE_NEW_PROCESS_GROUP",
         "CREATE_BREAKAWAY_FROM_JOB",
     } <= names

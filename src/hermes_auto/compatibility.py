@@ -62,7 +62,7 @@ class CompatibilityStatus(enum.Enum):
     """Outcome of a compatibility probe.
 
     Values are the lowercase member names so the status serializes readably into
-    the ``hermes auto doctor`` JSON output planned for Phase 2.
+    the ``hermes auto doctor`` diagnostic output.
     """
 
     COMPATIBLE = "compatible"

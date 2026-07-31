@@ -30,9 +30,9 @@ from .version import __version__
 __all__ = ["build_parser", "main"]
 
 _DESCRIPTION = (
-    "Supervise and diagnose the hermes-auto-router sidecar. Run `setup` first: "
-    "it installs the provider shim, which is what registers the provider with "
-    "Hermes."
+    "Configure and supervise deterministic /model auto routing for Hermes. "
+    "Run `setup` first to install both home-scoped Hermes components and the "
+    "literal auto alias."
 )
 
 
@@ -51,16 +51,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def add_subcommands(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    """Attach the six subcommands to *parser*."""
+    """Attach the focused product subcommands to *parser*."""
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     setup = subparsers.add_parser(
         "setup",
-        help="install the provider shim, mint tokens, enable the control plugin",
+        help="install both Hermes shims, tokens, control plugin, and Auto alias",
         description=(
-            "Installs the provider shim into $HERMES_HOME. Hermes discovers "
-            "model providers by scanning a directory, so this step -- not `pip "
-            "install` -- is what registers the provider."
+            "Installs the provider and dependency-free control shims into "
+            "$HERMES_HOME, enables the control plugin, and configures literal "
+            "`/model auto`."
         ),
     )
     setup.add_argument(
@@ -69,6 +69,30 @@ def add_subcommands(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="override $HERMES_HOME (default: the location Hermes itself uses)",
     )
     setup.set_defaults(func=lambda args: commands.cmd_setup(hermes_home=args.hermes_home))
+
+    configure = subparsers.add_parser(
+        "configure",
+        help="discover suggestions and approve the Auto candidate shortlist",
+    )
+    configure.add_argument("--hermes-home", default=None, help="override $HERMES_HOME")
+    configure.set_defaults(
+        func=lambda args: commands.cmd_configure(hermes_home=args.hermes_home)
+    )
+
+    explain = subparsers.add_parser(
+        "explain",
+        help="explain the latest or a named session's in-memory route",
+    )
+    explain.add_argument("--session-id", default="latest")
+    explain.set_defaults(
+        func=lambda args: commands.cmd_explain(session_id=args.session_id)
+    )
+
+    overview = subparsers.add_parser(
+        "overview",
+        help="show gateway health, candidate count, and the latest decision",
+    )
+    overview.set_defaults(func=lambda args: commands.cmd_overview())
 
     start = subparsers.add_parser("start", help="start the gateway sidecar")
     start.set_defaults(func=lambda args: commands.cmd_start())

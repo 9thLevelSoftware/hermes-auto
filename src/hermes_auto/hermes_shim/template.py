@@ -63,9 +63,9 @@ TOKEN_ENV_VAR = "__HERMES_AUTO_TOKEN_ENV_VAR__"
 PLUGIN_VERSION = "__HERMES_AUTO_PLUGIN_VERSION__"
 
 PROTOCOL_VERSION = 1
-DEFAULT_VIRTUAL_MODEL = "auto:balanced"
+DEFAULT_VIRTUAL_MODEL = "auto"
 MAX_FIELD_LENGTH = 256
-AUTO_MODELS = ("auto:quality", "auto:balanced", "auto:economy", "auto:session")
+AUTO_MODELS = ("auto", "auto:balanced", "auto:quality", "auto:economy", "auto:session")
 
 
 class HermesAutoProfile(ProviderProfile):
@@ -108,7 +108,7 @@ class HermesAutoProfile(ProviderProfile):
 auto_router_profile = HermesAutoProfile(
     name="hermes-auto",
     display_name="Hermes Auto Router",
-    description="Capability-, cost-, cache-, and outcome-aware model routing",
+    description="Deterministic capability- and complexity-aware /model auto routing",
     api_mode="chat_completions",
     base_url=BASE_URL,
     env_vars=(TOKEN_ENV_VAR,),

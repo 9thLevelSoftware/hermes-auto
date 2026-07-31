@@ -1,35 +1,53 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes are documented here. The project follows Semantic
+Versioning and the Keep a Changelog format.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-30
+
 ### Added
 
-- Repository skeleton and packaging contract
-- Five architecture decision records covering provider-plugin and local-gateway integration, session
-  and cache switching policy, model-card architecture, local-first telemetry and privacy, and
-  adapter isolation with rollout tiers
-- Seven versioned JSON Schemas: the OpenAI chat request and response subsets, the SSE stream
-  contract, the `_hermes_auto` metadata envelope, `RouteDecision`, model cards, and outcome events
-- Schema loader `hermes_auto.gateway.schemas` with `$id`-keyed lookup, duplicate-`$id` detection, and
-  a `validate` helper
-- Fail-closed Hermes compatibility probe `hermes_auto.compatibility`, pinning the supported Hermes
-  range to `>=0.19,<1.0`
-- Two GitHub Actions workflows: a cross-platform test matrix with a schema-validation phase-close
-  gate and a `package` job that asserts the built wheel carries all seven schemas plus `py.typed`
-  and then installs it into a clean virtualenv outside the repository and loads them from there —
-  the only gate that inspects the shipped artifact rather than the source tree — and nightly
-  compatibility runs against the latest Hermes release and `main`
-- STRIDE threat model covering all fourteen `design.md` §21 rows, with trust boundaries, assets,
-  residual risk, and a per-phase review cadence
-- User-facing privacy and telemetry guide documenting the four storage prohibitions and per-phase
-  control availability
-- Evaluation methodology: nine baseline strategies, the reproducibility contract, metric
-  definitions, and the current limits of what is measurable
-- Fixed-model baseline corpus of eleven tasks and the `hermes_auto.evaluation` metric harness
-- `scripts/benchmark.py`, an offline baseline report aggregator that validates every recorded event
-  against `outcome-event.v1` and produces byte-identical output for identical inputs
+- Literal `/model auto` Hermes alias and `auto`-first model listing.
+- Ordered, user-approved OpenAI-compatible candidate configuration.
+- Read-only Hermes model discovery with interactive, confirmed configuration.
+- Deterministic capability/context eligibility and complexity-tier selection.
+- Turn-level tool-loop stickiness and `auto:session` pinning in bounded memory.
+- Per-candidate upstream client pool with retryable normal and streaming fallback.
+- First-byte streaming commit barrier preventing mixed-model responses.
+- Authenticated bounded decision explanations through the admin API, CLI, and
+  `/auto`.
+- Dependency-free home-scoped control plugin delegating to the standalone
+  executable.
+
+### Changed
+
+- `hermes-auto setup` now installs both home-scoped Hermes plugins, enables the
+  control plugin, and preserves unrelated configuration while adding the Auto
+  alias.
+- Outbound requests rewrite the virtual model to the selected real model and
+  strip private metadata while preserving all other fields.
+- Existing fixed `auto_router.upstream` configuration migrates to one balanced
+  candidate with a warning.
+- Active product documentation now describes the focused deterministic router.
+
+### Removed
+
+- Active evaluation, benchmark, learned-routing, adapter, model-card,
+  outcome-event, replay, and persistent-telemetry scaffolding.
+- Admin mutation and feedback placeholders.
+
+### Preserved
+
+- Loopback authentication, provider shim, raw SSE relay, supervision, health
+  checks, and the Windows no-visible-terminal process-launch fix.
+
+The original research design and planning history remain under
+`docs/research-archive/`.
+
+## [0.1.0]
+
+- Initial provider shim, authenticated local passthrough gateway, supervision,
+  raw streaming relay, setup tooling, compatibility checks, and research
+  contracts.

@@ -1,13 +1,4 @@
-"""The single HTTP seam between this gateway and one fixed OpenAI-compatible target.
-
-Phase 2 proves a negative claim -- that a fixed candidate behaves identically
-through the gateway and called directly -- so there is exactly one upstream, no
-candidate list, no scoring, and no selection. ``02-CONTEXT.md`` records the
-decision to *reject* introducing a ``BackendAdapter`` Protocol here: an
-abstraction validated by one implementation is usually the wrong abstraction, and
-Phase 7 arrives with three real targets to shape it against. This module is the
-one call site Phase 7 replaces, and keeping routing concepts out of it is what
-makes that replacement a local edit.
+"""OpenAI-compatible candidate clients and the reusable client pool.
 
 Four properties are load-bearing.
 
@@ -44,7 +35,7 @@ from typing import Any
 
 import httpx
 
-from ..config import AutoRouterConfig, UpstreamConfig
+from ..config import AutoRouterConfig, CandidateConfig, UpstreamConfig
 from ..telemetry.redaction import sanitize_url
 from .errors import GatewayError
 
@@ -54,6 +45,7 @@ __all__ = [
     "RESPONSE_DROP_HEADERS",
     "UPSTREAM_TIMEOUT",
     "UpstreamClient",
+    "UpstreamClientPool",
     "UpstreamConfigError",
     "filter_request_headers",
     "filter_response_headers",
@@ -149,7 +141,7 @@ def filter_response_headers(
     return _filter(headers, RESPONSE_DROP_HEADERS)
 
 
-def _resolve_credential(upstream: UpstreamConfig) -> str | None:
+def _resolve_credential(upstream: UpstreamConfig | CandidateConfig) -> str | None:
     """Read the credential named by ``credential_ref``, or None for ``none``.
 
     Raises ``UpstreamConfigError`` naming the *variable*, never its value, when
@@ -179,13 +171,11 @@ class UpstreamClient:
 
     def __init__(
         self,
-        config: AutoRouterConfig | UpstreamConfig,
+        config: AutoRouterConfig | UpstreamConfig | CandidateConfig,
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        upstream = (
-            config.upstream if isinstance(config, AutoRouterConfig) else config
-        )
+        upstream = config.upstream if isinstance(config, AutoRouterConfig) else config
         self.config = upstream
         self._credential = _resolve_credential(upstream)
         self._owns_client = client is None
@@ -308,15 +298,68 @@ class UpstreamClient:
         return response.status_code, response.headers, b"".join(chunks)
 
     async def reachable(self, *, timeout: float = 2.0) -> Any:
-        """Delegate to :mod:`hermes_auto.health.probe`. Returns a ``ProbeResult``.
-
-        Imported inside the method so this module does not depend on ``health``
-        at import time: the seam Phase 7 replaces should carry as little as
-        possible with it.
-        """
+        """Delegate to :mod:`hermes_auto.health.probe`; return a ProbeResult."""
         from ..health.probe import check_upstream_reachable
 
         return await check_upstream_reachable(self.config.base_url, timeout=timeout)
+
+
+class UpstreamClientPool:
+    """Lazily constructed, reusable clients keyed by candidate id."""
+
+    def __init__(
+        self,
+        config: AutoRouterConfig,
+        *,
+        client_factory: Any = None,
+    ) -> None:
+        self.candidates = config.resolved_candidates
+        self._client_factory = client_factory or UpstreamClient
+        self._clients: dict[str, UpstreamClient] = {}
+
+    def _get(self, candidate: CandidateConfig) -> UpstreamClient:
+        client = self._clients.get(candidate.id)
+        if client is None:
+            client = self._client_factory(candidate)
+            self._clients[candidate.id] = client
+        return client
+
+    async def stream(
+        self,
+        candidate: CandidateConfig,
+        body: bytes,
+        headers: Iterable[tuple[str, str]] | Mapping[str, str] | None = None,
+    ) -> tuple[int, httpx.Headers, AsyncIterator[bytes]]:
+        return await self._get(candidate).stream(body, headers)
+
+    async def complete(
+        self,
+        candidate: CandidateConfig,
+        body: bytes,
+        headers: Iterable[tuple[str, str]] | Mapping[str, str] | None = None,
+    ) -> tuple[int, httpx.Headers, bytes]:
+        return await self._get(candidate).complete(body, headers)
+
+    async def reachable(self, *, timeout: float = 2.0) -> Any:
+        last: Any = None
+        for candidate in self.candidates:
+            try:
+                result = await self._get(candidate).reachable(timeout=timeout)
+            except UpstreamConfigError:
+                continue
+            last = result
+            if result.ready:
+                return result
+        if last is not None:
+            return last
+        from ..health.probe import ProbeResult
+
+        return ProbeResult(False, "no candidate has an available credential")
+
+    async def aclose(self) -> None:
+        for client in tuple(self._clients.values()):
+            await client.aclose()
+        self._clients.clear()
 
 
 def _as_pairs(

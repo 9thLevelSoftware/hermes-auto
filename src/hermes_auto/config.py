@@ -1,41 +1,9 @@
-"""Typed configuration for the auto-router sidecar.
+"""Typed configuration for the focused deterministic auto-router.
 
-This module makes one project constraint *enforceable* rather than remembered:
-**behavioral settings live in config.yaml; only credentials and generated tokens
-live in environment variables** (02-CONTEXT § Phase-Wide Constraints item 5).
-``credential_ref`` therefore accepts an environment-variable *reference* and
-nothing else. A literal secret is rejected at load time with a message saying
-where it belongs, so the failure happens on the developer's machine rather than
-in a config file that gets committed.
-
-Three contracts are frozen here and are read by plans 02-04 through 02-07.
-
-**Absent is not corrupt.** ``load_config(None)`` walks a resolution chain and
-falls through to fully-defaulted values when no config file exists. That is not
-leniency, it is the same distinction the runtime file draws: a missing file means
-"nothing configured", a present-but-unparseable file means "something is wrong".
-No ``config.yaml`` exists in this repository, and none is created before Wave 2,
-so a loader that treated absence as fatal would break every consumer's first
-verification command (02-CONTEXT § Configuration Contract).
-
-**An explicitly named path is an assertion that it exists.** ``load_config(p)``
-with an explicit ``p``, and a ``HERMES_AUTO_CONFIG`` that names a missing file,
-both raise ``ConfigError``. The caller asserted the file is there; silently
-handing back defaults would turn a typo in a path into a gateway that quietly
-runs against the wrong upstream. Only the *implicit* probe of
-``$HERMES_HOME/config.yaml`` is allowed to come up empty.
-
-**Unknown keys are rejected inside the blocks this phase owns, and ignored
-outside them.** A typo like ``strict_validaton`` under ``gateway:`` must be an
-error -- silently defaulting it to False is precisely the failure that makes a
-security setting untrustworthy. But design.md 16's ``auto_router:`` block also
-carries ``routing:``, ``constraints:``, ``candidates:``, ``telemetry:`` and
-``learning:``, which later phases own and this phase cannot validate. Rejecting
-those would make a correct, complete config.yaml unloadable in Phase 2. So the
-rule is: strict where we own the schema, permissive where we do not yet.
-
-Errors are typed. No bare ``KeyError``, ``TypeError``, ``ValueError``, or
-``yaml.YAMLError`` escapes ``load_config``.
+Behavior lives in Hermes ``config.yaml``; credentials remain environment
+variables named by ``credential_ref``. Absent implicit configuration falls back
+to safe local defaults, while explicit missing or malformed files fail closed.
+All keys owned by ``auto_router`` are validated strictly.
 """
 
 from __future__ import annotations
@@ -45,6 +13,7 @@ import os
 import pathlib
 import re
 import urllib.parse
+import warnings
 from typing import Any
 
 import yaml
@@ -53,21 +22,17 @@ import yaml
 # Documented defaults. Every field has one, and every one is cited.
 # ---------------------------------------------------------------------------
 
-# design.md 16: auto_router.gateway.url: http://127.0.0.1:8787
+# Public default used by the provider shim and literal ``auto`` alias.
 DEFAULT_GATEWAY_URL: str = "http://127.0.0.1:8787"
 # Derived from the URL above, and the source of DEFAULT_ADMIN_PORT.
 DEFAULT_GATEWAY_PORT: int = 8787
-# design.md 16
 DEFAULT_AUTO_START: bool = True
 DEFAULT_STARTUP_TIMEOUT_SECONDS: int = 10
-# 02-CONTEXT § Request Validation Policy: full request-schema validation is
-# hoisted at startup and runs unconditionally in the CI contract suite, but is
-# OFF at runtime until plan 02-04 measures the hoisted cost. Measurement decides
-# whether this flips, not taste.
+# Full schema validation is available but off by default for passthrough
+# compatibility and latency.
 DEFAULT_STRICT_VALIDATION: bool = False
-# Phase 2 forwards every request to one fixed OpenAI-compatible endpoint. The
-# default points at a local Ollama-style server so a zero-config run fails by
-# connection-refused rather than by leaking a prompt to a third party.
+# Legacy fixed-upstream defaults retained only for migration. The local default
+# fails by connection-refused instead of disclosing a prompt externally.
 DEFAULT_UPSTREAM_BASE_URL: str = "http://127.0.0.1:11434/v1"
 DEFAULT_UPSTREAM_MODEL: str = ""
 # design.md 16 uses `none` for an unauthenticated local endpoint.
@@ -81,9 +46,7 @@ CONFIG_FILE_NAME: str = "config.yaml"
 # The only top-level block in a Hermes config.yaml that belongs to this project.
 ROOT_KEY: str = "auto_router"
 
-# Frozen in Phase 1 by data/schema/routing/model-card.v1.schema.json. Reused here
-# verbatim so a candidate's credential_ref and the gateway's upstream
-# credential_ref cannot drift into two different notions of "safe".
+# One credential-reference contract for legacy upstream and focused candidates.
 CREDENTIAL_REF_PATTERN: str = r"^(env:[A-Z0-9_]+|none)$"
 _CREDENTIAL_REF_RE = re.compile(CREDENTIAL_REF_PATTERN)
 
@@ -104,6 +67,22 @@ _GATEWAY_KEYS = frozenset(
     }
 )
 _UPSTREAM_KEYS = frozenset({"base_url", "model", "credential_ref"})
+_CANDIDATE_KEYS = frozenset(
+    {
+        "id",
+        "provider",
+        "model",
+        "base_url",
+        "credential_ref",
+        "tier",
+        "context_window",
+        "supports_tools",
+        "supports_vision",
+    }
+)
+_CANDIDATE_TIERS = frozenset({"fast", "balanced", "strong"})
+_ROOT_KEYS = frozenset({"gateway", "upstream", "candidates"})
+_DEFAULT_CONTEXT_WINDOW = 128_000
 
 
 class ConfigError(Exception):
@@ -135,13 +114,7 @@ class GatewayConfig:
 
 @dataclasses.dataclass(frozen=True)
 class UpstreamConfig:
-    """The single fixed passthrough target for Phase 2.
-
-    Phase 2 proves a negative claim -- that one fixed candidate behaves
-    identically through the gateway and called directly -- so there is exactly
-    one upstream and no selection logic. Phase 7 replaces this with real
-    candidates; that is why there is no adapter seam here yet.
-    """
+    """Legacy fixed target accepted as a one-candidate migration input."""
 
     base_url: str = DEFAULT_UPSTREAM_BASE_URL
     model: str = DEFAULT_UPSTREAM_MODEL
@@ -161,13 +134,56 @@ class UpstreamConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class CandidateConfig:
+    """One explicitly approved OpenAI-compatible routing candidate."""
+
+    id: str
+    provider: str
+    model: str
+    base_url: str
+    credential_ref: str
+    tier: str
+    context_window: int
+    supports_tools: bool
+    supports_vision: bool
+
+    @property
+    def credential_env_var(self) -> str | None:
+        if self.credential_ref == "none":
+            return None
+        return self.credential_ref.split(":", 1)[1]
+
+
+@dataclasses.dataclass(frozen=True)
 class AutoRouterConfig:
-    """The whole ``auto_router:`` surface this phase understands."""
+    """The focused ``auto_router:`` surface."""
 
     gateway: GatewayConfig = dataclasses.field(default_factory=GatewayConfig)
+    # Kept as a construction-compatible migration input for callers from the
+    # fixed-upstream release. Runtime routing uses ``resolved_candidates``.
     upstream: UpstreamConfig = dataclasses.field(default_factory=UpstreamConfig)
+    candidates: tuple[CandidateConfig, ...] = ()
     # Where the values came from, for `doctor` output. None means "defaults".
     source_path: pathlib.Path | None = None
+
+    @property
+    def resolved_candidates(self) -> tuple[CandidateConfig, ...]:
+        if self.candidates:
+            return self.candidates
+        upstream = self.upstream
+        return (
+            CandidateConfig(
+                id="legacy-upstream",
+                provider="openai-compatible",
+                model=upstream.model,
+                base_url=upstream.base_url,
+                credential_ref=upstream.credential_ref,
+                tier="balanced",
+                context_window=_DEFAULT_CONTEXT_WINDOW,
+                supports_tools=True,
+                supports_vision=True,
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -295,20 +311,33 @@ def _check_base_url(
     try:
         parts = urllib.parse.urlsplit(value)
         has_userinfo = parts.username is not None or parts.password is not None
-    except ValueError:
-        # Unparseable is not this check's business -- upstream_endpoint reports
-        # it with a better message at the point it matters.
-        return value
-    if not has_userinfo:
-        return value
-    raise _fail(
-        source,
-        key,
-        "contains an embedded credential (a 'user:password@' section). "
-        "Credentials never belong in config.yaml -- remove the userinfo from "
-        "the URL and put the secret in an environment variable named by "
-        "'upstream.credential_ref' instead.",
-    )
+    except ValueError as exc:
+        raise _fail(
+            source,
+            key,
+            f"must be an absolute HTTP(S) URL ({type(exc).__name__})",
+        ) from exc
+    if has_userinfo:
+        raise _fail(
+            source,
+            key,
+            "contains an embedded credential (a 'user:password@' section). "
+            "Credentials never belong in config.yaml -- remove the userinfo from "
+            "the URL and put the secret in an environment variable named by "
+            "'credential_ref' instead.",
+        )
+    try:
+        host = parts.hostname
+        parts.port
+    except ValueError as exc:
+        raise _fail(
+            source,
+            key,
+            f"must be an absolute HTTP(S) URL ({type(exc).__name__})",
+        ) from exc
+    if parts.scheme.lower() not in {"http", "https"} or not host:
+        raise _fail(source, key, "must be an absolute HTTP(S) URL with a host")
+    return value
 
 
 def _check_credential_ref(
@@ -471,6 +500,118 @@ def _build_upstream(
     )
 
 
+def _required_candidate_string(
+    block: dict[str, Any],
+    source: pathlib.Path | None,
+    index: int,
+    key: str,
+) -> str:
+    path = f"candidates[{index}].{key}"
+    if key not in block:
+        raise _fail(source, path, "is required")
+    value = _as_str(block[key], source, path).strip()
+    if not value:
+        raise _fail(source, path, "must be a non-empty string")
+    return value
+
+
+def _build_candidates(
+    raw: Any, source: pathlib.Path | None
+) -> tuple[CandidateConfig, ...]:
+    if not isinstance(raw, list):
+        raise _fail(source, "candidates", f"expected a list, got {type(raw).__name__}")
+    if not raw:
+        raise _fail(source, "candidates", "must contain at least one candidate")
+
+    candidates: list[CandidateConfig] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(raw):
+        block = _as_mapping(item, source, f"candidates[{index}]")
+        _reject_unknown(block, _CANDIDATE_KEYS, source, f"candidates[{index}]")
+
+        candidate_id = _required_candidate_string(block, source, index, "id")
+        if candidate_id in seen_ids:
+            raise _fail(
+                source,
+                f"candidates[{index}].id",
+                f"duplicates candidate id {candidate_id!r}",
+            )
+        seen_ids.add(candidate_id)
+
+        tier = _required_candidate_string(block, source, index, "tier")
+        if tier not in _CANDIDATE_TIERS:
+            raise _fail(
+                source,
+                f"candidates[{index}].tier",
+                "expected one of fast, balanced, strong",
+            )
+
+        context_key = f"candidates[{index}].context_window"
+        if "context_window" not in block:
+            raise _fail(source, context_key, "is required")
+        context_window = _as_int(block["context_window"], source, context_key)
+        if context_window <= 0:
+            raise _fail(source, context_key, "must be a positive integer")
+
+        tools_key = f"candidates[{index}].supports_tools"
+        vision_key = f"candidates[{index}].supports_vision"
+        if "supports_tools" not in block:
+            raise _fail(source, tools_key, "is required")
+        if "supports_vision" not in block:
+            raise _fail(source, vision_key, "is required")
+
+        base_url_key = f"candidates[{index}].base_url"
+        credential_key = f"candidates[{index}].credential_ref"
+        base_url = _check_base_url(
+            _required_candidate_string(block, source, index, "base_url"),
+            source,
+            base_url_key,
+        )
+        credential_ref = _check_credential_ref(
+            _required_candidate_string(block, source, index, "credential_ref"),
+            source,
+            credential_key,
+        )
+        candidates.append(
+            CandidateConfig(
+                id=candidate_id,
+                provider=_required_candidate_string(block, source, index, "provider"),
+                model=_required_candidate_string(block, source, index, "model"),
+                base_url=base_url,
+                credential_ref=credential_ref,
+                tier=tier,
+                context_window=context_window,
+                supports_tools=_as_bool(block["supports_tools"], source, tools_key),
+                supports_vision=_as_bool(block["supports_vision"], source, vision_key),
+            )
+        )
+
+    if len(candidates) == 1:
+        warnings.warn(
+            "Auto routing has one candidate; configure at least two candidates "
+            "for a meaningful automatic selection.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    return tuple(candidates)
+
+
+def _migrate_upstream(upstream: UpstreamConfig) -> tuple[CandidateConfig, ...]:
+    return (
+        CandidateConfig(
+            id="legacy-upstream",
+            provider="openai-compatible",
+            model=upstream.model,
+            base_url=upstream.base_url,
+            credential_ref=upstream.credential_ref,
+            tier="balanced",
+            context_window=_DEFAULT_CONTEXT_WINDOW,
+            supports_tools=True,
+            supports_vision=True,
+        ),
+    )
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> AutoRouterConfig:
     """Load the ``auto_router:`` configuration.
 
@@ -498,22 +639,46 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AutoRouterConfig:
 
     document = _read_yaml(source)
 
-    # design.md 16 nests everything under `auto_router:` inside Hermes's own
-    # config.yaml. A standalone file that omits the wrapper is also accepted, so
+    # Hermes nests product settings under `auto_router:` in its config.yaml. A
+    # standalone file that omits the wrapper is also accepted, so
     # that a dedicated auto-router config does not need a redundant single key.
     if ROOT_KEY in document:
         root = _as_mapping(document[ROOT_KEY], source, ROOT_KEY)
+    elif not must_exist and not set(document).issubset(_ROOT_KEYS):
+        # An implicit Hermes config with no auto_router block is unrelated
+        # configuration, not a malformed standalone router file.
+        return AutoRouterConfig(source_path=source)
     else:
         root = document
+    _reject_unknown(root, _ROOT_KEYS, source, ROOT_KEY)
 
-    # Sibling blocks (routing, constraints, candidates, telemetry, learning) are
-    # deliberately not validated here; see the module docstring.
     gateway_block = _as_mapping(root.get("gateway"), source, "gateway")
     upstream_block = _as_mapping(root.get("upstream"), source, "upstream")
+    upstream = _build_upstream(upstream_block, source)
+
+    if "candidates" in root and "upstream" in root:
+        raise _fail(
+            source,
+            "auto_router",
+            "configure candidates or legacy upstream, not both",
+        )
+    if "candidates" in root:
+        candidates = _build_candidates(root["candidates"], source)
+    elif "upstream" in root:
+        candidates = _migrate_upstream(upstream)
+        warnings.warn(
+            "auto_router.upstream was migrated in memory to one candidate; "
+            "run `hermes-auto configure` to approve a multi-model shortlist.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    else:
+        candidates = ()
 
     return AutoRouterConfig(
         gateway=_build_gateway(gateway_block, source),
-        upstream=_build_upstream(upstream_block, source),
+        upstream=upstream,
+        candidates=candidates,
         source_path=source,
     )
 
@@ -522,6 +687,7 @@ __all__ = [
     "ConfigError",
     "GatewayConfig",
     "UpstreamConfig",
+    "CandidateConfig",
     "AutoRouterConfig",
     "load_config",
     "CREDENTIAL_REF_PATTERN",

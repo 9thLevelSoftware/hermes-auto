@@ -255,7 +255,7 @@ def test_error_schema_is_meta_valid(schemas):
 
 
 def test_every_packaged_schema_is_still_meta_valid(schemas):
-    """Adding the eighth schema did not disturb the other seven."""
+    """Every focused wire and provider-envelope schema remains meta-valid."""
     for schema_id, schema in schemas.items():
         jsonschema.Draft202012Validator.check_schema(schema)
         assert schema["$id"] == schema_id
@@ -268,8 +268,8 @@ def test_error_schema_declares_the_expected_id_and_dialect(schemas):
     assert schema["required"] == ["error"]
 
 
-def test_packaged_set_is_now_eight_and_matches_expected_ids():
-    """``EXPECTED_SCHEMA_IDS`` moved in the same change as the schema file.
+def test_packaged_set_matches_expected_ids():
+    """``EXPECTED_SCHEMA_IDS`` is the packaged-schema identity gate.
 
     That constant is the single source of truth the CI identity check and the
     wheel-packaging gate both read. A schema added without updating it fails
@@ -278,7 +278,7 @@ def test_packaged_set_is_now_eight_and_matches_expected_ids():
     """
     loaded = set(load_schemas())
     assert loaded == set(EXPECTED_SCHEMA_IDS), sorted(loaded ^ set(EXPECTED_SCHEMA_IDS))
-    assert len(EXPECTED_SCHEMA_IDS) == 8
+    assert len(EXPECTED_SCHEMA_IDS) == 5
     assert ERROR_SCHEMA_ID in EXPECTED_SCHEMA_IDS
 
 

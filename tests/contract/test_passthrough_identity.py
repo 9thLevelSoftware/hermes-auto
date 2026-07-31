@@ -65,6 +65,9 @@ from tests.integration.mock_upstream import (
 pytestmark = pytest.mark.contract
 
 FIXTURE_NAMES = sorted(FIXTURES)
+IDENTITY_FIXTURE_NAMES = [
+    name for name in FIXTURE_NAMES if name not in {"error_401", "error_429"}
+]
 
 #: Fixtures whose upstream response is deliberately truncated: the mock closes
 #: the connection without the terminating chunk, so a correct client raises on
@@ -223,7 +226,7 @@ def normalise(payload: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("fixture_name", FIXTURE_NAMES)
+@pytest.mark.parametrize("fixture_name", IDENTITY_FIXTURE_NAMES)
 async def test_fixture_relays_byte_identically(
     fixture_name, upstream, state_dir, token
 ):
@@ -407,7 +410,7 @@ async def test_unmodelled_fields_survive_the_round_trip(upstream, state_dir, tok
         assert key in received, f"{key} was dropped"
         assert received[key] == value, f"{key} was altered"
     assert received["messages"] == [{"role": "user", "content": "hello"}]
-    assert received["model"] == "auto:balanced"
+    assert received["model"] == "fixed-target"
 
 
 async def test_absent_envelope_is_not_an_error(upstream, state_dir, token):
@@ -657,16 +660,16 @@ async def test_malformed_json_is_400_not_500(upstream, state_dir, token):
 
 @pytest.mark.parametrize(
     ("fixture_name", "expected_status"),
-    [("error_401", 401), ("error_429", 429), ("error_context_length", 400)],
+    [("error_context_length", 400)],
 )
 async def test_upstream_errors_are_relayed_with_status_and_body_intact(
     fixture_name, expected_status, upstream, state_dir, token
 ):
     """The gateway does not reinterpret a provider error.
 
-    A gateway that turned an upstream 429 into a 502 -- or into its own 400 --
-    would break every client retry policy keyed on the provider's status, and
-    would violate R5 on the error path just as surely as on the success path.
+    Ordinary request-validation failures are terminal and remain byte-identical.
+    Authentication, throttling, and server failures are retryable routing
+    failures and are covered by the focused fallback tests.
     """
     upstream.script(fixture_name)
     app = create_app(make_config(upstream.url))
@@ -680,11 +683,6 @@ async def test_upstream_errors_are_relayed_with_status_and_body_intact(
     assert response.status_code == expected_status
     assert response.content == fixture_bytes(fixture_name)
     assert_error_body(response.json())
-    if fixture_name == "error_429":
-        assert response.headers.get("retry-after") == "20", (
-            "dropping Retry-After turns a recoverable throttle into an opaque "
-            "failure for the caller"
-        )
 
 
 async def test_unreachable_upstream_is_502_and_not_a_truncated_200(state_dir, token):
@@ -705,7 +703,7 @@ async def test_unreachable_upstream_is_502_and_not_a_truncated_200(state_dir, to
     assert response.status_code == 502
     payload = response.json()
     assert_error_body(payload)
-    assert payload["error"]["code"] == "upstream_unavailable"
+    assert payload["error"]["code"] == "all_candidates_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -935,7 +933,9 @@ async def test_gateway_still_serves_after_a_client_aborts(upstream, state_dir, t
 # ---------------------------------------------------------------------------
 
 
-async def test_models_lists_the_four_virtual_lanes(upstream, state_dir, token):
+async def test_models_lists_auto_first_and_compatibility_names(
+    upstream, state_dir, token
+):
     """``/v1/models`` reports the router's lanes and does not proxy upstream."""
     upstream.script("text_stream")
     app = create_app(make_config(upstream.url))
@@ -955,6 +955,7 @@ async def test_models_lists_the_four_virtual_lanes(upstream, state_dir, token):
     assert payload["object"] == "list"
     assert [entry["id"] for entry in payload["data"]] == list(VIRTUAL_MODELS)
     assert set(VIRTUAL_MODELS) == {
+        "auto",
         "auto:quality",
         "auto:balanced",
         "auto:economy",

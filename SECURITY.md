@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | Yes — current pre-release development line |
-| < 0.1   | No — no such release exists |
+| 0.2.x   | Yes — current pre-release development line |
+| 0.1.x   | No |
 
 The project is pre-release. Until a 1.0 line exists, only the most recent `0.x` minor version
 receives security fixes. Older `0.x` versions are not patched.
@@ -44,16 +44,16 @@ following four invariants are hard requirements, not defaults to be relaxed by c
    and write). The token is never committed, logged, or included in diagnostics.
 3. **No CORS.** The gateway sends no cross-origin resource sharing headers and does not honor
    cross-origin preflight requests. It is not a browser-reachable service.
-4. **No raw prompt or secret retention by default.** The local telemetry store records routing
-   evidence — decisions, usage, cost, health, and outcomes — but never raw prompts, tool-result
-   bodies, or credential values. Session identifiers are salted hashes. External telemetry export is
-   disabled by default and opt-in only.
+4. **No raw prompt, secret, or telemetry retention.** Recent routing decisions live only in bounded
+   process memory and contain no prompt text, message contents, tool-result bodies, credential
+   values, raw session identifiers, feedback, or outcomes. Session identifiers are salted hashes.
 
 Additional posture notes:
 
 - Credentials are referenced by environment variable name (`env:VAR_NAME`) in configuration, never
   by value. No committed file in this repository contains a secret.
-- Sidecar dependencies are installed into an environment isolated from the Hermes Agent environment.
+- The home-scoped Hermes control shim is dependency-free and delegates to the absolute standalone
+  executable, so the Hermes virtual environment does not need this package installed.
 - Route explanations are derived only from router inputs and must never leak credential material or
   hidden model reasoning.
 

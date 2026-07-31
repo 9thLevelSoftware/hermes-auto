@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-auto-router"
-description = "Capability-, cost-, cache-, and outcome-aware model routing for Hermes Agent"
+description = "Deterministic /model auto routing for Hermes Agent"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
@@ -17,12 +17,8 @@ dependencies = [
     # relying on that leaves a direct import undeclared.
     "referencing>=0.30",
     "pyyaml>=6.0",
-    # Phase 2 gateway stack. Recorded in
-    # .planning/phases/02-provider-plugin-passthrough-gateway/02-CONTEXT.md
-    # § Architecture Decision. fastapi, pydantic, psutil and structlog were
-    # each considered and explicitly refused there: FastAPI's value is Pydantic
-    # request modeling, which silently drops any field it does not model and so
-    # defeats the opaque-dict passthrough that makes R5 structurally true.
+    # Starlette keeps the OpenAI request body as an opaque mapping. Request
+    # models that drop unknown fields would break forward-compatible passthrough.
     "starlette>=0.37",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
@@ -35,18 +31,6 @@ dependencies = [
 # script there is no way to run `setup` on a fresh install, because the command
 # that enables the plugin would itself be provided by the plugin.
 hermes-auto = "hermes_auto.cli:main"
-
-[project.entry-points."hermes_agent.plugins"]
-# This registers the CONTROL plugin only: slash commands, `hermes auto`
-# subcommands, and lifecycle hooks. It does NOT register the model provider.
-# Model providers are discovered by scanning
-# $HERMES_HOME/plugins/model-providers/, never by entry point
-# (02-CONTEXT § VERIFIED HERMES FACTS item 1), and the provider is installed
-# there as a shim by `hermes-auto setup`. Conflating the two is the mistake
-# design.md §5.1 invites. The key must stay `hermes-auto-control`: Hermes builds
-# the plugin manifest with `name=ep.name` and matches plugins.enabled against
-# exactly that string.
-hermes-auto-control = "hermes_auto.plugin"
 
 [project.optional-dependencies]
 dev = [
@@ -66,7 +50,6 @@ where = ["src"]
 hermes_auto = [
     "py.typed",
     "data/schema/**/*.json",
-    "data/*.yaml",
 ]
 
 [tool.pytest.ini_options]

@@ -316,13 +316,13 @@ def test_build_validator_rejects_unknown_schema_id():
 def test_packaged_schema_set_matches_expected_ids():
     """An identity gate, not a count.
 
-    A count check ("seven schemas") passes when a stray eighth schema is added
+    A count check alone passes when a stray schema is added
     in the same change that deletes or renames a required one. Comparing the set
     catches both halves. Adding or renaming a packaged schema must be a
     deliberate edit to ``EXPECTED_SCHEMA_IDS``.
     """
     assert set(load_schemas()) == set(EXPECTED_SCHEMA_IDS)
-    assert len(EXPECTED_SCHEMA_IDS) == 8
+    assert len(EXPECTED_SCHEMA_IDS) == 5
 
     # Every declared id is genuinely loadable, so the constant cannot drift into
     # naming a schema that does not exist.

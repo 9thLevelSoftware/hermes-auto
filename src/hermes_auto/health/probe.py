@@ -27,8 +27,7 @@ the first real request, and the honest place to surface them is that request's
 own error. This module states its own limits rather than overclaiming, which is
 the house rule the schema descriptions follow too.
 
-Phase 6 extends readiness with candidate health (design.md 11.1). It extends this
-module; it does not reach into ``gateway/app.py``.
+The gateway applies this check across its configured candidate clients.
 """
 
 from __future__ import annotations

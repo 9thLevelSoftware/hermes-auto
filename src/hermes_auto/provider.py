@@ -54,12 +54,13 @@ __all__ = [
     "gateway_base_url",
 ]
 
-#: The four virtual models this provider offers. Hermes shows these in its
+#: The virtual models this provider offers. Hermes shows these in its
 #: ``/model`` picker when a live catalog fetch fails, and accepts them as
 #: ``model`` values regardless.
 AUTO_MODELS: tuple[str, ...] = (
-    "auto:quality",
+    "auto",
     "auto:balanced",
+    "auto:quality",
     "auto:economy",
     "auto:session",
 )
@@ -82,21 +83,21 @@ PROTOCOL_VERSION: int = 1
 MAX_FIELD_LENGTH: int = 256
 
 #: Used when Hermes supplies no ``model`` in the call context.
-DEFAULT_VIRTUAL_MODEL: str = "auto:balanced"
+DEFAULT_VIRTUAL_MODEL: str = "auto"
 
 #: Declared to Hermes so ``hermes doctor`` and the credential prompts know
 #: which variable carries the gateway's bearer token.
 TOKEN_ENV_VAR: str = "HERMES_AUTO_ROUTER_TOKEN"
 
-#: design.md §5.1 and §16. Used when no configuration file overrides it.
+#: Used when no configuration file overrides the focused gateway address.
 DEFAULT_BASE_URL: str = "http://127.0.0.1:8787/v1"
 
 
 def gateway_base_url(config: AutoRouterConfig | None = None) -> str:
     """Return the OpenAI-compatible base URL Hermes should dial.
 
-    Derived from ``auto_router.gateway.url`` -- the field ``design.md`` §16
-    defines as the address Hermes talks to -- with the ``/v1`` prefix the
+    Derived from ``auto_router.gateway.url`` -- the address Hermes talks to --
+    with the ``/v1`` prefix the
     OpenAI client appends its paths under. ``gateway.port`` is deliberately not
     consulted: plan 02-01 derives the port *from* the URL, so the URL is the
     authority and reading the port back could produce an address that disagrees
@@ -129,11 +130,10 @@ def build_envelope(
     (``agent/auxiliary_client.py:7006``) passes **no** ``session_id`` at all;
     ``agent/chat_completion_helpers.py:2097`` passes
     ``getattr(agent, "session_id", None)``, which is frequently ``None``.
-    ``root_session_id`` is ``minLength: 1`` in the frozen schema and the
+    ``root_session_id`` is ``minLength: 1`` in the provider-envelope schema and the
     gateway validates the envelope inline, so emitting ``session_id or ""``
     would return 400 for every compression, vision, title-generation and
-    web-extraction call -- exactly the auxiliary surface design.md §8.3 relies
-    on. A synthesized unique id keeps those calls working and keeps them
+    web-extraction call. A synthesized unique id keeps those calls working and keeps them
     distinguishable from one another downstream.
     """
     root_session_id = session_id or f"no-session-{uuid.uuid4().hex}"
@@ -190,7 +190,7 @@ def build_profile(
     return HermesAutoProfile(
         name=PROVIDER_NAME,
         display_name="Hermes Auto Router",
-        description="Capability-, cost-, cache-, and outcome-aware model routing",
+        description="Deterministic capability- and complexity-aware /model auto routing",
         api_mode="chat_completions",
         base_url=base_url if base_url is not None else gateway_base_url(),
         env_vars=(TOKEN_ENV_VAR,),

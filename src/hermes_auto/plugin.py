@@ -1,41 +1,8 @@
-"""The Hermes control plugin: ``hermes auto ...``, ``/auto status``, and a hook.
+"""Reference control-plugin behavior for commands, ``/auto``, and auto-start.
 
-This module is the target of the ``hermes_agent.plugins`` entry point. Hermes
-imports it and calls :func:`register` with a ``PluginContext``
-(``hermes_cli/plugins.py``). Three facts about that loader shape everything
-here.
-
-**It registers the control plugin, never the provider.** Model providers are
-discovered by scanning ``$HERMES_HOME/plugins/model-providers/``; the entry
-point group is for general plugins only (02-CONTEXT § VERIFIED HERMES FACTS
-item 1). The provider is a separate artifact, written by
-``hermes_auto.hermes_shim.installer``. ``design.md`` §5.1 reads as though one
-declaration does both, and following it produces a plugin that loads and a
-provider that does not exist.
-
-**The plugin does not load until it is enabled.** ``plugins.enabled`` is an
-opt-in allow-list; an absent key means nothing is enabled, and ``register()`` is
-then never called. ``hermes auto setup`` writes that key -- which is why
-``setup`` must also be reachable through the ``hermes-auto`` console script, or
-a fresh install has no way to run it.
-
-**A wrong hook name fails silently.** ``register_hook`` warns about a name
-outside ``VALID_HOOKS`` and then *stores the callback anyway*, where nothing
-will ever call it. So the literal string ``"on_session_start"`` is used, taken
-from ``VALID_HOOKS`` in the loader, and pinned by a test -- a typo here would
-produce a plugin that loads cleanly, logs at WARNING into a file nobody reads,
-and never auto-starts the gateway.
-
-**Only ``/auto status`` is registered.** ``design.md`` §4.2 lists six further
-``/auto`` subcommands. Every one of them reports or manipulates routing state,
-and there is no routing in Phase 2 -- the gateway forwards every request to one
-fixed upstream. A command that explained a routing decision today would be
-inventing one that was never made, and a user who trusts it once will keep
-trusting it after real routing lands and the answers change meaning. Leaving
-them unregistered gives an honest "unknown command"; the phases that deliver
-each of them are named in ``gateway/admin.py``'s 501 bodies. Which names are
-withheld is pinned by ``tests/unit/test_cli.py``, since a docstring listing
-them here is indistinguishable from code registering them to a text search.
+Production setup writes a dependency-free equivalent beneath the Hermes home
+and points it at the absolute standalone executable. This in-package module
+keeps the same command semantics available for direct tests and integrations.
 
 **The session hook fails soft.** If auto-start fails, Hermes must still open.
 A router that cannot start should degrade into an error on the next inference
@@ -54,9 +21,7 @@ from .telemetry.redaction import get_logger
 
 __all__ = ["HOOK_NAME", "PLUGIN_NAME", "on_session_start", "register", "slash_auto"]
 
-#: Must equal the ``[project.entry-points."hermes_agent.plugins"]`` key: the
-#: loader builds its manifest with ``name=ep.name`` and matches
-#: ``plugins.enabled`` against that exact string.
+#: Must equal the home-scoped plugin manifest and enabled-plugin name.
 PLUGIN_NAME = "hermes-auto-control"
 
 #: The literal name from ``VALID_HOOKS`` (``hermes_cli/plugins.py``). Not
@@ -70,23 +35,18 @@ def _logger() -> Any:
 
 
 def slash_auto(raw_args: str = "") -> str:
-    """``/auto status`` -- the only slash command backed by real behaviour.
-
-    Hermes's slash handlers take one raw argument string and return the text to
-    show. Anything other than ``status`` (including bare ``/auto``) says so
-    explicitly rather than defaulting to status, so a user who typed
-    ``/auto explain`` learns the command does not exist yet instead of getting
-    an answer to a different question.
-    """
+    """Show the Auto overview or explain the latest in-memory decision."""
     argument = (raw_args or "").strip().split(" ")[0].lower()
+    buffer = io.StringIO()
     if argument in ("", "status"):
-        buffer = io.StringIO()
-        commands.cmd_status(stream=buffer)
+        commands.cmd_overview(stream=buffer)
+        return buffer.getvalue().strip()
+    if argument == "explain":
+        commands.cmd_explain(stream=buffer)
         return buffer.getvalue().strip()
     return (
-        f"/auto {argument} is not available. This build routes every request to "
-        f"a single fixed upstream, so there is no routing decision to report, "
-        f"change, or explain. Only `/auto status` is implemented."
+        f"/auto {argument} is not available. Use `/auto`, `/auto status`, "
+        "or `/auto explain`."
     )
 
 
@@ -157,7 +117,7 @@ def _handle_cli(args: Any) -> int:
     handler = getattr(args, "func", None)
     if handler is None:
         print(
-            "usage: hermes auto {setup,start,stop,restart,status,doctor}\n"
+            "usage: hermes auto {setup,configure,explain,start,stop,restart,status,doctor}\n"
             "Run `hermes auto doctor` for a full diagnostic."
         )
         return 2

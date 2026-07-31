@@ -198,7 +198,9 @@ async def _mirror_exit(servers: list[uvicorn.Server]) -> None:
         await asyncio.sleep(_EXIT_POLL_SECONDS)
 
 
-def _build_admin_app(config: AutoRouterConfig, logger: Any) -> Any | None:
+def _build_admin_app(
+    config: AutoRouterConfig, logger: Any, decision_router: Any = None
+) -> Any | None:
     """Return plan 02-06's admin app, or None with a warning if it is absent.
 
     Imported here rather than at module scope so this plan does not block on
@@ -218,7 +220,7 @@ def _build_admin_app(config: AutoRouterConfig, logger: Any) -> Any | None:
         )
         return None
     try:
-        return create_admin_app(config)
+        return create_admin_app(config, decision_router=decision_router)
     except TypeError:
         return create_admin_app()
 
@@ -298,7 +300,10 @@ async def serve(
     published = False
 
     try:
-        admin_app = _build_admin_app(config, logger)
+        from ..routing import DecisionRouter
+
+        decision_router = DecisionRouter(config.resolved_candidates)
+        admin_app = _build_admin_app(config, logger, decision_router)
         if admin_app is not None:
             admin_socket = bind_socket(host, config.gateway.admin_port)
             sockets.append(admin_socket)
@@ -331,7 +336,11 @@ async def serve(
             }
         )
 
-        app = create_app(config, instance_id=resolved_instance_id)
+        app = create_app(
+            config,
+            instance_id=resolved_instance_id,
+            decision_router=decision_router,
+        )
         servers.append(_make_server(app, primary=True))
         tasks = [servers[0].serve(sockets=[inference_socket])]
         if admin_app is not None and admin_socket is not None:

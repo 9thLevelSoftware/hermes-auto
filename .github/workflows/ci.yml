@@ -135,13 +135,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      # Phase-close gate. It asserts the completed Phase 1 state -- all seven
-      # versioned schemas discoverable through the glob-based loader -- and is
-      # expected to fail on any commit made before every schema plan has landed.
-      # That is intended. There is deliberately no continue-on-error and no
-      # tolerance clause: an empty or short result is a failure, because a
-      # silently empty loader is precisely the packaging bug this job exists to
-      # catch.
+      # Identity gate for the focused provider-envelope and wire schemas.
       - name: Assert every schema is discoverable
         run: |
           python -c "from hermes_auto.gateway.schemas import load_schemas, EXPECTED_SCHEMA_IDS as E; s = set(load_schemas()); assert s == set(E), sorted(s ^ set(E))"
@@ -179,8 +173,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip wheel --no-deps -w "$WHEEL_DIR" .
 
-      # Exactly seven, not "at least seven": a >= comparison cannot detect a
-      # stray eighth schema or a duplicate landing at the tree root.
+      # Exact identity/count, so a stray addition cannot mask a missing schema.
       - name: Assert the wheel carries the full schema payload
         env:
           WHEEL_DIR: ${{ runner.temp }}/dist-check

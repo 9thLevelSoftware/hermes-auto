@@ -1,8 +1,7 @@
 """Authentication, limits, and the envelope strip -- everything before the hop.
 
-This is design.md 5.4's Ingress box, minus the parts Phase 2 does not have:
-there is no canonicalization, no token estimation, and no routing. What is here
-is the four things that must happen before a byte leaves for the upstream.
+It authenticates, enforces request limits, parses an opaque mapping, validates
+the private provider envelope, and removes that envelope before transmission.
 
 **Authentication takes one path.** A missing ``Authorization`` header and a wrong
 token run through the same ``compare_token`` call and produce the same response.
@@ -39,8 +38,7 @@ envelope is ours, bounded to five fields, and costs microseconds, so it is
 checked on every request. The full ``openai-chat-request.v1`` check is a
 different question -- it walks a 100-200 KB ``messages`` array against a
 recursive schema -- and runs only under ``gateway.strict_validation``, whose
-default ``02-CONTEXT.md`` ties to the measurement in
-``tests/performance/test_validation_cost.py``.
+default is measured by ``tests/performance/test_validation_cost.py``.
 """
 
 from __future__ import annotations

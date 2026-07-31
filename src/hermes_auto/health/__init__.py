@@ -1,1 +1,1 @@
-"""Provider health: rolling trackers, circuit breakers, probes, anomaly detection (Phase 6)."""
+"""Gateway and candidate reachability probes."""

@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import re
 import socket
 import subprocess
 import sys
@@ -54,7 +53,6 @@ from starlette.testclient import TestClient
 from hermes_auto.config import AutoRouterConfig, GatewayConfig, UpstreamConfig
 from hermes_auto.gateway.admin import (
     ADMIN_TOKEN_FILENAME,
-    NOT_IMPLEMENTED_TYPE,
     AdminAuthMiddleware,
     admin_token_path,
     admin_token_permissions_ok,
@@ -83,17 +81,6 @@ ADMIN_ENDPOINTS: tuple[tuple[str, str], ...] = (
     ("GET", "/admin/v1/status"),
     ("POST", "/admin/v1/shutdown"),
     ("GET", "/admin/v1/decisions/dec_123"),
-    ("POST", "/admin/v1/sessions/sess_123/reroute"),
-    ("POST", "/admin/v1/sessions/sess_123/pin"),
-    ("POST", "/admin/v1/feedback"),
-)
-
-#: The four §5.3 endpoints that describe routing this phase does not have.
-UNIMPLEMENTED_ENDPOINTS: tuple[tuple[str, str], ...] = (
-    ("GET", "/admin/v1/decisions/dec_123"),
-    ("POST", "/admin/v1/sessions/sess_123/reroute"),
-    ("POST", "/admin/v1/sessions/sess_123/pin"),
-    ("POST", "/admin/v1/feedback"),
 )
 
 
@@ -297,8 +284,8 @@ def test_inference_token_is_rejected_by_every_admin_endpoint(
 
     A caller holding the inference bearer token -- the one every Hermes session
     has, because it is what the provider plugin sends on every request -- gets
-    401 from every admin endpoint including ``shutdown``, ``reroute`` and
-    ``pin``. The admin token is minted and valid at the same time, so this
+    401 from every admin endpoint including ``shutdown`` and decision
+    explanations. The admin token is minted and valid at the same time, so this
     cannot pass merely because the app rejects everything.
     """
     assert inference_token != admin_token
@@ -613,47 +600,13 @@ def test_status_survives_a_damaged_runtime_file(state_dir: pathlib.Path) -> None
     assert response.json()["instance_id"] is None
 
 
-# ---------------------------------------------------------------------------
-# Honest 501s
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(("method", "path"), UNIMPLEMENTED_ENDPOINTS)
-def test_unimplemented_endpoints_return_a_parseable_501_naming_a_phase(
-    client: Any, admin_token: str, method: str, path: str
-) -> None:
-    response = client.request(method, path, headers=auth(admin_token))
-    assert response.status_code == 501, (method, path, response.text)
-
-    body = response.json()
-    assert_error_body(body)
-    assert body["error"]["type"] == NOT_IMPLEMENTED_TYPE
-    assert body["error"]["code"] == NOT_IMPLEMENTED_TYPE
-    assert re.search(r"Phase \d+", body["error"]["message"]), body["error"]["message"]
-
-
-@pytest.mark.parametrize(("method", "path"), UNIMPLEMENTED_ENDPOINTS)
-def test_unimplemented_endpoints_do_not_reflect_the_callers_path_parameter(
-    client: Any, admin_token: str, method: str, path: str
-) -> None:
-    """No stub success, and no reflection primitive either."""
-    marked = path.replace("dec_123", "REFLECT_ME").replace("sess_123", "REFLECT_ME")
-    response = client.request(method, marked, headers=auth(admin_token))
-    assert response.status_code == 501
-    assert "REFLECT_ME" not in response.text
-
-
-def test_the_four_unimplemented_routes_are_the_design_53_set(client: Any) -> None:
-    """§5.3's endpoint list, present in full and split the way this plan claims."""
+def test_admin_routes_include_session_decisions_and_no_inference(client: Any) -> None:
     app = create_admin_app()
     paths = {route.path for route in app.routes}
     assert paths == {
         "/admin/v1/status",
         "/admin/v1/shutdown",
-        "/admin/v1/decisions/{decision_id}",
-        "/admin/v1/sessions/{session_id}/reroute",
-        "/admin/v1/sessions/{session_id}/pin",
-        "/admin/v1/feedback",
+        "/admin/v1/decisions/{session_id}",
     }
 
 

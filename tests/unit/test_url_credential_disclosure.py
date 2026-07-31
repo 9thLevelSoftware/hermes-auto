@@ -149,10 +149,11 @@ def test_transport_failure_502_body_does_not_disclose_userinfo(
     assert response.status_code == 502
     assert SECRET not in response.text
     assert "apiuser" not in response.text
-    # The diagnostic half must survive: an operator still has to learn *which*
-    # endpoint was unreachable, or the sanitizer has traded a leak for a
-    # useless error.
-    assert "127.0.0.1:1" in response.text
+    # Candidate ids and sanitized reasons survive; endpoint URLs never enter the
+    # all-candidates-failed response.
+    assert "legacy-upstream" in response.text
+    assert "upstream_unavailable" in response.text
+    assert "127.0.0.1:1" not in response.text
 
 
 def test_upstream_client_connect_error_is_sanitized_at_the_source(
