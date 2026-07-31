@@ -1,1 +1,1 @@
-"""Gateway ingress: auth, size/token checks, OpenAI schema validation, streaming, admin (Phase 2)."""
+"""Authenticated OpenAI-compatible routing gateway and admin API."""

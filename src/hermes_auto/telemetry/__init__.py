@@ -1,1 +1,1 @@
-"""Local-first evidence store: events, SQLite persistence, outcomes, retention, exporters (Phase 8)."""
+"""Privacy-preserving redaction and structured logging; no telemetry store."""

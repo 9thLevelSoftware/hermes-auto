@@ -1,8 +1,7 @@
 name: Hermes Compatibility
 
-# design.md 18 Phase 0 item 3 requires CI against both the latest Hermes release
-# and current main; design.md 10.2 Tier 4 requires nightly CI against Hermes main
-# for the optional credential bridge.
+# The supported range is tested against both the latest Hermes release and
+# current main so upstream loader changes fail visibly.
 on:
   schedule:
     # 06:00 UTC daily.

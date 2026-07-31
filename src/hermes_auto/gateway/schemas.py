@@ -1,11 +1,8 @@
 """Load and validate the versioned JSON Schemas packaged under ``hermes_auto/data/schema``.
 
 Discovery is by **recursive glob** (``**/*.schema.json``), never by a hardcoded
-filename list or an explicit registry. That is a deliberate design constraint,
-not an implementation shortcut: a new schema directory -- ``routing/``,
-``telemetry/``, or anything a later phase adds -- becomes loadable by dropping
-files into it, with no edit to this module and therefore no write conflict
-between plans that own different schema directories.
+filename list or an explicit registry. A new wire contract becomes loadable by
+dropping it beneath the schema root.
 
 The module does exactly two things: it loads schemas and it validates instances
 against them. It holds no routing, scoring, eligibility, canonicalization,
@@ -53,11 +50,9 @@ SCHEMA_ROOT: pathlib.Path = (
 EXPECTED_SCHEMA_IDS: frozenset[str] = frozenset(
     {
         "https://hermes-auto-router.dev/schema/routing/hermes-auto-metadata.v1.json",
-        "https://hermes-auto-router.dev/schema/routing/model-card.v1.json",
-        "https://hermes-auto-router.dev/schema/routing/outcome-event.v1.json",
-        "https://hermes-auto-router.dev/schema/routing/route-decision.v1.json",
         "https://hermes-auto-router.dev/schema/wire/openai-chat-request.v1.json",
         "https://hermes-auto-router.dev/schema/wire/openai-chat-response.v1.json",
+        "https://hermes-auto-router.dev/schema/wire/openai-error.v1.json",
         "https://hermes-auto-router.dev/schema/wire/sse-stream-contract.v1.json",
     }
 )
@@ -83,8 +78,7 @@ def load_schemas(root: pathlib.Path | None = None) -> dict[str, dict]:
     Args:
         root: Directory to search. Defaults to :data:`SCHEMA_ROOT`. A missing
             or empty directory yields an empty mapping rather than an error,
-            so an optional schema directory that a later phase has not created
-            yet is not a failure.
+            so an optional empty schema directory is not a failure.
 
     Returns:
         Mapping of ``$id`` string to the parsed schema object.

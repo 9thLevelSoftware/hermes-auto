@@ -1,0 +1,8 @@
+data: {"id":"chatcmpl-test0008","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"role":"assistant","content":null,"refusal":null},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0008","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{"refusal":"I cannot help with that synthetic request."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-test0008","object":"chat.completion.chunk","created":1700000000,"model":"test-model-a","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}]}
+
+data: [DONE]
+
