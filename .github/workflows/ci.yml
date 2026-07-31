@@ -92,10 +92,23 @@ jobs:
       # exit status is tee's, which is always 0, so a failing suite would report
       # a green job -- the exact "silently reports success" failure this job
       # exists to prevent, reintroduced by the mechanism meant to expose it.
+      # Pytest returns 5 when the collection-level Hermes prerequisite skips the
+      # entire suite. Accept that status only when the output proves a real skip;
+      # an empty or broken collection must remain red.
       - name: Run the live surface suite
         run: |
           set -o pipefail
+          set +e
           python -m pytest tests/e2e -q -rs 2>&1 | tee e2e-output.txt
+          pytest_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$pytest_status" -eq 5 ]; then
+            grep -q '^SKIPPED \[' e2e-output.txt
+            grep -Eq '[0-9]+ skipped in ' e2e-output.txt
+          elif [ "$pytest_status" -ne 0 ]; then
+            exit "$pytest_status"
+          fi
 
       # `if: always()` so a failing run still reports which surfaces it reached.
       # The skip reasons are the whole product of this job on a runner with no
@@ -171,6 +184,11 @@ jobs:
           WHEEL_DIR: ${{ runner.temp }}/dist-check
         run: |
           python -m pip install --upgrade pip
+          # The next step imports the source schema registry to obtain the
+          # expected identity set. Install only that module's direct imports;
+          # the clean-wheel step below still proves the artifact and its full
+          # dependency metadata independently.
+          python -m pip install jsonschema referencing
           python -m pip wheel --no-deps -w "$WHEEL_DIR" .
 
       # Exact identity/count, so a stray addition cannot mask a missing schema.
